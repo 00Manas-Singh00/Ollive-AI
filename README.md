@@ -10,7 +10,7 @@ This project is a full-stack demo that includes:
 
 ## Tech Stack
 - Next.js (App Router, TypeScript)
-- Google Gemini API (default model: `gemini-2.5-flash`)
+- Multi-provider LLM support: Gemini + Grok
 - Prisma ORM + SQLite
 - Zod for ingestion payload validation
 
@@ -23,7 +23,14 @@ npm install
 ```bash
 cp .env.example .env
 ```
-3. Set `GEMINI_API_KEY` in `.env`.
+3. Configure provider and keys in `.env`:
+```env
+LLM_PROVIDER="gemini" # or "grok"
+GEMINI_API_KEY=""
+GEMINI_MODEL="gemini-2.5-flash"
+GROK_API_KEY=""
+GROK_MODEL="grok-3-mini"
+```
 4. Create DB schema:
 ```bash
 npx prisma db push
@@ -43,7 +50,7 @@ docker compose up --build
 ## Architecture Overview
 - UI calls `/api/chat`
 - Chat route persists messages and assembles short context window
-- Wrapper sends LLM request and captures metadata
+- Wrapper selects provider adapter (Gemini/Grok), sends LLM request, and captures metadata
 - Wrapper posts metadata to `/api/ingest`
 - Ingestion validates and stores in `InferenceLog`
 
@@ -61,7 +68,7 @@ Tradeoff:
 - Short input/output previews balance debuggability with sensitive data minimization.
 
 ## What I'd Improve With More Time
-- Multi-provider abstraction (Gemini, OpenAI, Claude)
+- Add OpenAI and Claude adapters to the same provider interface
 - Streaming response handling and token-by-token logging
 - Dashboard endpoints for latency, throughput, errors
 - Queue-based ingestion (Kafka/SQS + worker)

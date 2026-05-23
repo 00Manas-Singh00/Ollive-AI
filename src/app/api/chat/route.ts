@@ -4,8 +4,12 @@ import { callLLMWithLogging } from "@/lib/llm";
 
 export async function POST(req: NextRequest) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
+    const provider = (process.env.LLM_PROVIDER || "gemini").toLowerCase();
+    if (provider === "gemini" && !process.env.GEMINI_API_KEY) {
       return NextResponse.json({ error: "GEMINI_API_KEY is not configured" }, { status: 500 });
+    }
+    if (provider === "grok" && !process.env.GROK_API_KEY) {
+      return NextResponse.json({ error: "GROK_API_KEY is not configured" }, { status: 500 });
     }
 
     const body = await req.json();
