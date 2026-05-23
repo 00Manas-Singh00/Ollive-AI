@@ -1,0 +1,16 @@
+:root {
+  --bg: #f7f4ef;
+  --panel: #fffdf8;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --accent: #0f766e;
+  --line: #e5e7eb;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
+  background: radial-gradient(circle at top left, #fff8ea 0%, var(--bg) 45%, #eef7f5 100%);
+  color: var(--text);
+}
