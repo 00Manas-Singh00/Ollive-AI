@@ -11,7 +11,7 @@ This project is a full-stack demo that includes:
 ## Tech Stack
 - Next.js (App Router, TypeScript)
 - Multi-provider LLM support: Gemini + Grok
-- Prisma ORM + SQLite
+- Prisma ORM + PostgreSQL
 - Zod for ingestion payload validation
 
 ## Setup
@@ -25,15 +25,16 @@ cp .env.example .env
 ```
 3. Configure provider and keys in `.env`:
 ```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/DB_NAME?sslmode=require"
 LLM_PROVIDER="gemini" # or "grok"
 GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
 GROK_API_KEY=""
 GROK_MODEL="grok-3-mini"
 ```
-4. Create DB schema:
+4. Create/apply DB migrations:
 ```bash
-npx prisma db push
+npx prisma migrate dev --name init
 ```
 5. Run app:
 ```bash
@@ -61,7 +62,7 @@ docker compose up --build
 - Indexed by conversation, status, provider/model for practical querying
 
 Tradeoff:
-- SQLite is simple for local demo but not ideal at high write throughput.
+- PostgreSQL is production-friendly and deployable on serverless platforms, but requires managed DB setup.
 
 ## Logging + Ingestion Tradeoffs
 - Best-effort non-blocking ingestion avoids user-facing latency penalties.
