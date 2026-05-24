@@ -10,12 +10,28 @@ export default function ChatUI() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function parseJsonSafe(res: Response) {
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
 
   async function refresh() {
+    setError("");
     const res = await fetch("/api/conversations", { cache: "no-store" });
-    const data = await res.json();
-    setConversations(data.conversations || []);
-    if (!activeId && data.conversations?.length) setActiveId(data.conversations[0].id);
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      setError(data?.error || `Failed to load conversations (${res.status})`);
+      return;
+    }
+    setConversations(data?.conversations || []);
+    if (!activeId && data?.conversations?.length) setActiveId(data.conversations[0].id);
   }
 
   useEffect(() => {
@@ -27,6 +43,7 @@ export default function ChatUI() {
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
+    setError("");
     setLoading(true);
     setInput("");
 
@@ -36,10 +53,12 @@ export default function ChatUI() {
       body: JSON.stringify({ conversationId: activeId, message: text }),
     });
 
-    if (res.ok) {
-      const payload = await res.json();
+    const payload = await parseJsonSafe(res);
+    if (res.ok && payload) {
       setActiveId(payload.conversationId);
       await refresh();
+    } else {
+      setError(payload?.error || `Chat request failed (${res.status})`);
     }
 
     setLoading(false);
@@ -70,6 +89,7 @@ export default function ChatUI() {
       </aside>
       <section style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
         <h1>LLM Chatbot with Inference Logging</h1>
+        {error && <p style={{ color: "#b91c1c", margin: 0 }}>{error}</p>}
         <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", padding: 16, background: "var(--panel)" }}>
           {active?.messages.map((m) => (
             <p key={m.id}><strong>{m.role}:</strong> {m.content}</p>

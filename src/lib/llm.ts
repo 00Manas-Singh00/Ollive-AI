@@ -84,7 +84,7 @@ async function callGemini(params: { model: string; messages: LLMMessage[] }) {
   const response = await geminiClient.models.generateContent({
     model: params.model,
     contents: prompt,
-    config: { temperature: 0.5, maxOutputTokens: 300 },
+    config: { temperature: 0.5, maxOutputTokens: 900 },
   });
 
   return {
@@ -109,7 +109,7 @@ async function callGrok(params: { model: string; messages: LLMMessage[] }) {
       model: params.model,
       messages: params.messages,
       temperature: 0.5,
-      max_tokens: 300,
+      max_tokens: 900,
     }),
     cache: "no-store",
   });
