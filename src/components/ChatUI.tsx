@@ -69,10 +69,19 @@ export default function ChatUI() {
     await refresh();
   }
 
+  function startNewConversation() {
+    setActiveId(null);
+    setError("");
+    setInput("");
+  }
+
   return (
     <main style={{ display: "grid", gridTemplateColumns: "300px 1fr", minHeight: "100vh" }}>
       <aside style={{ borderRight: "1px solid var(--line)", padding: 16 }}>
-        <h2>Conversations</h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <h2 style={{ margin: 0 }}>Conversations</h2>
+          <button onClick={startNewConversation}>New</button>
+        </div>
         {conversations.map((c) => (
           <div key={c.id} style={{ marginBottom: 10, padding: 10, background: "var(--panel)", border: "1px solid var(--line)" }}>
             <button onClick={() => setActiveId(c.id)} style={{ fontWeight: 700, border: 0, background: "transparent", cursor: "pointer" }}>
