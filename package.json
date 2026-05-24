@@ -17,7 +17,7 @@
   "dependencies": {
     "@google/genai": "^0.14.1",
     "@prisma/client": "^6.8.2",
-    "next": "^16.2.6",
+    "next": "^15.5.18",
     "prisma": "^6.8.2",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
