@@ -42,7 +42,7 @@ export default function ChatUI() {
 
   async function send() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || active?.status === "paused") return;
     setError("");
     setLoading(true);
     setInput("");
@@ -64,8 +64,18 @@ export default function ChatUI() {
     setLoading(false);
   }
 
-  async function cancelConversation(id: string) {
-    await fetch(`/api/conversations/${id}/cancel`, { method: "POST" });
+  async function updateConversationStatus(id: string, action: "pause" | "resume") {
+    await fetch(`/api/conversations/${id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    await refresh();
+  }
+
+  async function deleteConversation(id: string) {
+    await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    if (activeId === id) setActiveId(null);
     await refresh();
   }
 
@@ -87,12 +97,18 @@ export default function ChatUI() {
             <button onClick={() => setActiveId(c.id)} style={{ fontWeight: 700, border: 0, background: "transparent", cursor: "pointer" }}>
               {c.title}
             </button>
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>{c.status}</div>
-            {c.status === "active" && (
-              <button onClick={() => cancelConversation(c.id)} style={{ marginTop: 8 }}>
-                Cancel
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{c.status}</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {c.status === "active" && (
+                <button onClick={() => updateConversationStatus(c.id, "pause")}>Pause</button>
+              )}
+              {c.status === "paused" && (
+                <button onClick={() => updateConversationStatus(c.id, "resume")}>Resume</button>
+              )}
+              <button onClick={() => deleteConversation(c.id)} style={{ color: "#b91c1c" }}>
+                Delete
               </button>
-            )}
+            </div>
           </div>
         ))}
       </aside>
@@ -106,8 +122,13 @@ export default function ChatUI() {
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type your message" style={{ flex: 1, padding: 10 }} />
-          <button onClick={send} disabled={loading}>{loading ? "Sending..." : "Send"}</button>
+          <button onClick={send} disabled={loading || active?.status === "paused"}>{loading ? "Sending..." : "Send"}</button>
         </div>
+        {active?.status === "paused" && (
+          <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+            This conversation is paused. Click Resume to continue.
+          </p>
+        )}
       </section>
     </main>
   );

@@ -24,8 +24,8 @@ export async function POST(req: NextRequest) {
     if (conversationId) {
       conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
       if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-      if (conversation.status === "cancelled") {
-        return NextResponse.json({ error: "Conversation is cancelled" }, { status: 409 });
+      if (conversation.status === "paused") {
+        return NextResponse.json({ error: "Conversation is paused. Resume it to continue." }, { status: 409 });
       }
     } else {
       conversation = await prisma.conversation.create({
