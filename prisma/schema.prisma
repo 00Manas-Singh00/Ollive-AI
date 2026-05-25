@@ -37,6 +37,9 @@ model InferenceLog {
   model             String
   status            String
   latencyMs         Int
+  ttftMs            Int?
+  streamDurationMs  Int?
+  mode              String?
   promptTokens      Int?
   completionTokens  Int?
   totalTokens       Int?

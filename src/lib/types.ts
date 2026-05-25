@@ -3,7 +3,10 @@ export type LogEvent = {
   provider: string;
   model: string;
   status: "success" | "error";
+  mode?: "sync" | "stream";
   latencyMs: number;
+  ttftMs?: number;
+  streamDurationMs?: number;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;

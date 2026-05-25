@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Message = { id: string; role: string; content: string };
 type Conversation = { id: string; title: string; status: string; messages: Message[] };
@@ -38,7 +38,10 @@ export default function ChatUI() {
     refresh();
   }, []);
 
-  const active = conversations.find((c) => c.id === activeId) || null;
+  const active = useMemo(
+    () => conversations.find((c) => c.id === activeId) || null,
+    [conversations, activeId]
+  );
 
   async function send() {
     const text = input.trim();
@@ -86,49 +89,112 @@ export default function ChatUI() {
   }
 
   return (
-    <main style={{ display: "grid", gridTemplateColumns: "300px 1fr", minHeight: "100vh" }}>
-      <aside style={{ borderRight: "1px solid var(--line)", padding: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <h2 style={{ margin: 0 }}>Conversations</h2>
-          <button onClick={startNewConversation}>New</button>
-        </div>
-        {conversations.map((c) => (
-          <div key={c.id} style={{ marginBottom: 10, padding: 10, background: "var(--panel)", border: "1px solid var(--line)" }}>
-            <button onClick={() => setActiveId(c.id)} style={{ fontWeight: 700, border: 0, background: "transparent", cursor: "pointer" }}>
-              {c.title}
-            </button>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{c.status}</div>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              {c.status === "active" && (
-                <button onClick={() => updateConversationStatus(c.id, "pause")}>Pause</button>
-              )}
-              {c.status === "paused" && (
-                <button onClick={() => updateConversationStatus(c.id, "resume")}>Resume</button>
-              )}
-              <button onClick={() => deleteConversation(c.id)} style={{ color: "#b91c1c" }}>
-                Delete
-              </button>
-            </div>
+    <main className="chat-shell">
+      <aside className="chat-sidebar">
+        <div className="brand-row">
+          <div>
+            <p className="brand-kicker">OlliveAI</p>
+            <h2 className="brand-title">Conversations</h2>
           </div>
-        ))}
-      </aside>
-      <section style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
-        <h1>LLM Chatbot with Inference Logging</h1>
-        {error && <p style={{ color: "#b91c1c", margin: 0 }}>{error}</p>}
-        <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", padding: 16, background: "var(--panel)" }}>
-          {active?.messages.map((m) => (
-            <p key={m.id}><strong>{m.role}:</strong> {m.content}</p>
+          <button className="ghost-btn" onClick={startNewConversation}>New</button>
+        </div>
+
+        <div className="thread-list">
+          {conversations.map((c) => (
+            <article
+              key={c.id}
+              className={`thread-card ${c.id === activeId ? "active" : ""}`}
+              onClick={() => setActiveId(c.id)}
+            >
+              <h3>{c.title}</h3>
+              <div className="thread-meta">
+                <span className={`status ${c.status}`}>{c.status}</span>
+              </div>
+              <div className="thread-actions">
+                {c.status === "active" && (
+                  <button
+                    className="mini-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateConversationStatus(c.id, "pause");
+                    }}
+                  >
+                    Pause
+                  </button>
+                )}
+                {c.status === "paused" && (
+                  <button
+                    className="mini-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateConversationStatus(c.id, "resume");
+                    }}
+                  >
+                    Resume
+                  </button>
+                )}
+                <button
+                  className="mini-btn danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteConversation(c.id);
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </article>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type your message" style={{ flex: 1, padding: 10 }} />
-          <button onClick={send} disabled={loading || active?.status === "paused"}>{loading ? "Sending..." : "Send"}</button>
+      </aside>
+
+      <section className="chat-main">
+        <header className="chat-header">
+          <h1>{active ? active.title : "Start a new conversation"}</h1>
+          <p>Ask anything. Conversations are logged with inference telemetry.</p>
+        </header>
+
+        {error && <p className="error-banner">{error}</p>}
+
+        <div className="message-pane">
+          {active?.messages?.length ? (
+            active.messages.map((m, i) => (
+              <div
+                key={m.id}
+                className={`bubble-row ${m.role === "user" ? "user" : "assistant"}`}
+                style={{ animationDelay: `${i * 30}ms` }}
+              >
+                <div className="bubble">
+                  <p>{m.content}</p>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state">
+              <h3>New thread ready</h3>
+              <p>Send your first message to begin the conversation.</p>
+            </div>
+          )}
         </div>
-        {active?.status === "paused" && (
-          <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
-            This conversation is paused. Click Resume to continue.
-          </p>
-        )}
+
+        <div className="composer-wrap">
+          <div className="composer">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Message OlliveAI"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") send();
+              }}
+            />
+            <button className="send-btn" onClick={send} disabled={loading || active?.status === "paused"}>
+              {loading ? "Sending" : "Send"}
+            </button>
+          </div>
+          {active?.status === "paused" && (
+            <p className="status-note">This conversation is paused. Click Resume in the sidebar.</p>
+          )}
+        </div>
       </section>
     </main>
   );

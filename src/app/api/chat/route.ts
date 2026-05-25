@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
     });
 
     const llmMessages = [
-      { role: "system" as const, content: "You are a concise, helpful assistant." },
+      { role: "system" as const, content: "You are a concise, helpful assistant. Avoid repeating the same responses in a conversation. Prefer fresh, original responses." },
       ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
     ];
 
