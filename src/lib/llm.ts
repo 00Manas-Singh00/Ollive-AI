@@ -269,6 +269,9 @@ async function streamGemini(params: {
   const startedAt = Date.now();
   let firstTokenAt: number | null = null;
   let output = "";
+  let usageMetadata:
+    | { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }
+    | undefined;
 
   const stream = await geminiClient.models.generateContentStream({
     model: params.model,
@@ -278,6 +281,7 @@ async function streamGemini(params: {
 
   for await (const chunk of stream) {
     if (params.isAborted?.()) break;
+    usageMetadata = chunk.usageMetadata ?? usageMetadata;
     const token = chunk.text || "";
     if (!token) continue;
     if (firstTokenAt === null) firstTokenAt = Date.now();
@@ -285,16 +289,13 @@ async function streamGemini(params: {
     params.onToken(token);
   }
 
-  const finalResponse = await stream.response;
-  const finalText = (finalResponse as any)?.text || "";
-  if (!output && finalText) output = finalText;
   return {
     output,
     ttftMs: firstTokenAt ? firstTokenAt - startedAt : undefined,
     streamDurationMs: Date.now() - startedAt,
-    promptTokens: finalResponse.usageMetadata?.promptTokenCount,
-    completionTokens: finalResponse.usageMetadata?.candidatesTokenCount,
-    totalTokens: finalResponse.usageMetadata?.totalTokenCount,
+    promptTokens: usageMetadata?.promptTokenCount,
+    completionTokens: usageMetadata?.candidatesTokenCount,
+    totalTokens: usageMetadata?.totalTokenCount,
   };
 }
 

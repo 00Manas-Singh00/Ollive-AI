@@ -1,4 +1,4 @@
-import { Worker, QueueEvents } from "bullmq";
+import { Worker, QueueEvents, Queue } from "bullmq";
 import { prisma } from "@/lib/prisma";
 import { logSchema, type IngestPayload } from "@/lib/ingest-schema";
 
@@ -76,10 +76,13 @@ const worker = new Worker<JobData>(
 const queueEvents = new QueueEvents("inference-ingest", {
   connection: { url: redisUrl },
 });
+const ingestQueue = new Queue("inference-ingest", {
+  connection: { url: redisUrl },
+});
 
 queueEvents.on("failed", async ({ jobId, failedReason }) => {
   if (!jobId) return;
-  const job = await worker.getJob(jobId);
+  const job = await ingestQueue.getJob(jobId);
   if (!job) return;
 
   const maxRetries = Number(process.env.INGEST_MAX_RETRIES || 5);
