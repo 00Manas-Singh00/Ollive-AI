@@ -1,20 +1,27 @@
 import { Queue } from "bullmq";
 
-const redisUrl = process.env.REDIS_URL;
+let cachedQueue: Queue | null = null;
 
-if (!redisUrl) {
-  throw new Error("REDIS_URL is not configured");
-}
+export function getIngestQueue(): Queue {
+  if (cachedQueue) return cachedQueue;
 
-export const ingestQueue = new Queue("inference-ingest", {
-  connection: { url: redisUrl },
-  defaultJobOptions: {
-    attempts: Number(process.env.INGEST_MAX_RETRIES || 5),
-    backoff: {
-      type: "exponential",
-      delay: Number(process.env.INGEST_RETRY_DELAY_MS || 1000),
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedQueue = new Queue("inference-ingest", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: Number(process.env.INGEST_MAX_RETRIES || 5),
+      backoff: {
+        type: "exponential",
+        delay: Number(process.env.INGEST_RETRY_DELAY_MS || 1000),
+      },
+      removeOnComplete: true,
+      removeOnFail: false,
     },
-    removeOnComplete: true,
-    removeOnFail: false,
-  },
-});
+  });
+
+  return cachedQueue;
+}

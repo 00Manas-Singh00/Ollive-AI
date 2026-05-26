@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
-import { ingestQueue } from "@/lib/queue";
+import { getIngestQueue } from "@/lib/queue";
 import { logSchema } from "@/lib/ingest-schema";
 
 function idempotencyKeyFromPayload(payload: unknown): string {
@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
     const raw = await req.json();
     const payload = logSchema.parse(raw);
     const eventId = idempotencyKeyFromPayload(payload);
+    const ingestQueue = getIngestQueue();
 
     await ingestQueue.add(
       "ingest-log",
