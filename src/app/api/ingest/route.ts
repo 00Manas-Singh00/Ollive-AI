@@ -1,53 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { createHash } from "crypto";
+import { ingestQueue } from "@/lib/queue";
+import { logSchema } from "@/lib/ingest-schema";
 
-const logSchema = z.object({
-  conversationId: z.string().min(1),
-  provider: z.string().min(1),
-  model: z.string().min(1),
-  status: z.enum(["success", "error"]),
-  mode: z.enum(["sync", "stream"]).optional(),
-  latencyMs: z.number().int().nonnegative(),
-  ttftMs: z.number().int().nonnegative().optional(),
-  streamDurationMs: z.number().int().nonnegative().optional(),
-  promptTokens: z.number().int().nonnegative().optional(),
-  completionTokens: z.number().int().nonnegative().optional(),
-  totalTokens: z.number().int().nonnegative().optional(),
-  requestTs: z.string().datetime(),
-  responseTs: z.string().datetime(),
-  inputPreview: z.string().min(1),
-  outputPreview: z.string().optional(),
-  errorMessage: z.string().optional(),
-});
+function idempotencyKeyFromPayload(payload: unknown): string {
+  const serialized = JSON.stringify(payload);
+  return createHash("sha256").update(serialized).digest("hex");
+}
 
 export async function POST(req: NextRequest) {
   try {
     const raw = await req.json();
     const payload = logSchema.parse(raw);
+    const eventId = idempotencyKeyFromPayload(payload);
 
-    await prisma.inferenceLog.create({
-      data: {
-        conversationId: payload.conversationId,
-        provider: payload.provider,
-        model: payload.model,
-        status: payload.status,
-        mode: payload.mode,
-        latencyMs: payload.latencyMs,
-        ttftMs: payload.ttftMs,
-        streamDurationMs: payload.streamDurationMs,
-        promptTokens: payload.promptTokens,
-        completionTokens: payload.completionTokens,
-        totalTokens: payload.totalTokens,
-        requestTs: new Date(payload.requestTs),
-        responseTs: new Date(payload.responseTs),
-        inputPreview: payload.inputPreview,
-        outputPreview: payload.outputPreview,
-        errorMessage: payload.errorMessage,
-      },
-    });
+    await ingestQueue.add(
+      "ingest-log",
+      { eventId, payload },
+      { jobId: eventId }
+    );
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, eventId, queued: true }, { status: 202 });
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid payload" },

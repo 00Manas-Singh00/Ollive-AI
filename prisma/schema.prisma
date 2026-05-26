@@ -56,3 +56,27 @@ model InferenceLog {
   @@index([provider, model])
   @@index([status, createdAt])
 }
+
+
+model IngestionEvent {
+  id             String   @id
+  conversationId String
+  status         String
+  createdAt      DateTime @default(now())
+  processedAt    DateTime?
+
+  @@index([conversationId, createdAt])
+}
+
+model IngestionDLQ {
+  id             String   @id @default(cuid())
+  eventId        String
+  conversationId String
+  payload        String
+  reason         String
+  retryCount     Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([eventId])
+  @@index([conversationId, createdAt])
+}

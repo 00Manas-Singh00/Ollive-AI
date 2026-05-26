@@ -3,6 +3,16 @@ import type { LogEvent } from "@/lib/types";
 
 type LLMMessage = { role: string; content: string };
 type ProviderName = "gemini" | "grok";
+type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
+
+type ProviderResponse = {
+  output: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  ttftMs?: number;
+  streamDurationMs?: number;
+};
 
 const geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -22,53 +32,146 @@ async function sendLog(event: LogEvent): Promise<void> {
   } catch {}
 }
 
-function getProviderAndModel() {
-  const provider = (process.env.LLM_PROVIDER || "gemini").toLowerCase() as ProviderName;
-  const model =
-    provider === "grok"
-      ? process.env.GROK_MODEL || "grok-3-mini"
-      : process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  return { provider, model };
+function providerModel(provider: ProviderName): string {
+  return provider === "grok"
+    ? process.env.GROK_MODEL || "grok-3-mini"
+    : process.env.GEMINI_MODEL || "gemini-2.5-flash";
+}
+
+function configuredProviders(): ProviderName[] {
+  const list: ProviderName[] = [];
+  if (process.env.GEMINI_API_KEY) list.push("gemini");
+  if (process.env.GROK_API_KEY) list.push("grok");
+  return list;
+}
+
+function providerOrder(policy: RoutingPolicy): ProviderName[] {
+  if (policy === "quality") return ["grok", "gemini"];
+  if (policy === "latency") return ["gemini", "grok"];
+  if (policy === "cost") return ["gemini", "grok"];
+  const manual = (process.env.LLM_PROVIDER || "gemini").toLowerCase() as ProviderName;
+  return manual === "grok" ? ["grok", "gemini"] : ["gemini", "grok"];
+}
+
+function getProviderPlan(): ProviderName[] {
+  const policy = ((process.env.LLM_ROUTING_POLICY || "manual").toLowerCase() as RoutingPolicy);
+  const configured = new Set(configuredProviders());
+  const order = providerOrder(policy).filter((p) => configured.has(p));
+  if (order.length === 0) {
+    throw new Error("No configured provider found. Set GEMINI_API_KEY and/or GROK_API_KEY.");
+  }
+  return order;
+}
+
+function isRetryableProviderError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("429") ||
+    message.includes("rate limit") ||
+    message.includes("quota") ||
+    message.includes("500") ||
+    message.includes("502") ||
+    message.includes("503") ||
+    message.includes("504") ||
+    message.includes("temporar") ||
+    message.includes("timed out") ||
+    message.includes("network") ||
+    message.includes("econn")
+  );
+}
+
+async function executeWithFailover(params: {
+  mode: "sync" | "stream";
+  conversationId: string;
+  messages: LLMMessage[];
+  onToken?: (token: string) => void;
+  isAborted?: () => boolean;
+}): Promise<{ provider: ProviderName; model: string; response: ProviderResponse }> {
+  const plan = getProviderPlan();
+  let lastError: unknown;
+
+  for (let i = 0; i < plan.length; i += 1) {
+    const provider = plan[i];
+    const model = providerModel(provider);
+    try {
+      const response = await runProvider({ provider, model, ...params });
+      return { provider, model, response };
+    } catch (error) {
+      lastError = error;
+      const canFailover = i < plan.length - 1 && isRetryableProviderError(error);
+      if (!canFailover) throw error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("All providers failed");
+}
+
+async function runProvider(params: {
+  provider: ProviderName;
+  model: string;
+  mode: "sync" | "stream";
+  messages: LLMMessage[];
+  onToken?: (token: string) => void;
+  isAborted?: () => boolean;
+}): Promise<ProviderResponse> {
+  if (params.provider === "grok") {
+    const resp = await callGrok({ model: params.model, messages: params.messages });
+    if (params.mode === "stream" && params.onToken && !params.isAborted?.()) {
+      params.onToken(resp.output);
+    }
+    return resp;
+  }
+
+  if (params.mode === "stream") {
+    return streamGemini({
+      model: params.model,
+      messages: params.messages,
+      onToken: params.onToken || (() => {}),
+      isAborted: params.isAborted,
+    });
+  }
+
+  return callGemini({ model: params.model, messages: params.messages });
 }
 
 export async function callLLMWithLogging(params: {
   conversationId: string;
   messages: LLMMessage[];
 }): Promise<{ output: string }> {
-  const { provider, model } = getProviderAndModel();
   const requestTs = new Date();
   const start = Date.now();
 
   try {
-    const providerResponse =
-      provider === "grok"
-        ? await callGrok({ model, messages: params.messages })
-        : await callGemini({ model, messages: params.messages });
+    const result = await executeWithFailover({
+      mode: "sync",
+      conversationId: params.conversationId,
+      messages: params.messages,
+    });
     const responseTs = new Date();
 
     await sendLog({
       conversationId: params.conversationId,
-      provider,
-      model,
+      provider: result.provider,
+      model: result.model,
       status: "success",
       mode: "sync",
       latencyMs: Date.now() - start,
-      promptTokens: providerResponse.promptTokens,
-      completionTokens: providerResponse.completionTokens,
-      totalTokens: providerResponse.totalTokens,
+      promptTokens: result.response.promptTokens,
+      completionTokens: result.response.completionTokens,
+      totalTokens: result.response.totalTokens,
       requestTs: requestTs.toISOString(),
       responseTs: responseTs.toISOString(),
       inputPreview: preview(params.messages.map((m) => `${m.role}: ${m.content}`).join("\n")),
-      outputPreview: preview(providerResponse.output),
+      outputPreview: preview(result.response.output),
     });
 
-    return { output: providerResponse.output };
+    return { output: result.response.output };
   } catch (error) {
     const responseTs = new Date();
     await sendLog({
       conversationId: params.conversationId,
-      provider,
-      model,
+      provider: "gemini",
+      model: providerModel("gemini"),
       status: "error",
       mode: "sync",
       latencyMs: Date.now() - start,
@@ -87,47 +190,45 @@ export async function streamLLMWithLogging(params: {
   onToken: (token: string) => void;
   isAborted?: () => boolean;
 }): Promise<{ output: string }> {
-  const { provider, model } = getProviderAndModel();
   const requestTs = new Date();
   const start = Date.now();
 
   try {
-    const providerResponse =
-      provider === "grok"
-        ? await callGrok({ model, messages: params.messages })
-        : await streamGemini({ model, messages: params.messages, onToken: params.onToken, isAborted: params.isAborted });
-
-    if (provider === "grok" && !params.isAborted?.()) {
-      params.onToken(providerResponse.output);
-    }
+    const result = await executeWithFailover({
+      mode: "stream",
+      conversationId: params.conversationId,
+      messages: params.messages,
+      onToken: params.onToken,
+      isAborted: params.isAborted,
+    });
 
     const responseTs = new Date();
     await sendLog({
       conversationId: params.conversationId,
-      provider,
-      model,
+      provider: result.provider,
+      model: result.model,
       status: params.isAborted?.() ? "error" : "success",
       mode: "stream",
       latencyMs: Date.now() - start,
-      ttftMs: providerResponse.ttftMs,
-      streamDurationMs: providerResponse.streamDurationMs ?? Date.now() - start,
-      promptTokens: providerResponse.promptTokens,
-      completionTokens: providerResponse.completionTokens,
-      totalTokens: providerResponse.totalTokens,
+      ttftMs: result.response.ttftMs,
+      streamDurationMs: result.response.streamDurationMs ?? Date.now() - start,
+      promptTokens: result.response.promptTokens,
+      completionTokens: result.response.completionTokens,
+      totalTokens: result.response.totalTokens,
       requestTs: requestTs.toISOString(),
       responseTs: responseTs.toISOString(),
       inputPreview: preview(params.messages.map((m) => `${m.role}: ${m.content}`).join("\n")),
-      outputPreview: preview(providerResponse.output),
+      outputPreview: preview(result.response.output),
       errorMessage: params.isAborted?.() ? "stream_aborted_by_user" : undefined,
     });
 
-    return { output: providerResponse.output };
+    return { output: result.response.output };
   } catch (error) {
     const responseTs = new Date();
     await sendLog({
       conversationId: params.conversationId,
-      provider,
-      model,
+      provider: "gemini",
+      model: providerModel("gemini"),
       status: "error",
       mode: "stream",
       latencyMs: Date.now() - start,
@@ -146,7 +247,7 @@ async function callGemini(params: { model: string; messages: LLMMessage[] }) {
   const response = await geminiClient.models.generateContent({
     model: params.model,
     contents: prompt,
-    config: { temperature: 0.5, maxOutputTokens: 900 },
+    config: { temperature: 0.9, maxOutputTokens: 900 },
   });
 
   return {

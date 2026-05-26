@@ -12,7 +12,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:push": "prisma db push"
+    "prisma:push": "prisma db push",
+    "worker:ingest": "dotenv -e .env -- tsx src/workers/ingest-worker.ts"
   },
   "dependencies": {
     "@google/genai": "^0.14.1",
@@ -21,12 +22,15 @@
     "prisma": "^6.8.2",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "zod": "^3.24.4"
+    "zod": "^3.24.4",
+    "bullmq": "^5.10.3",
+    "ioredis": "^5.4.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "tsx": "^4.19.2"
   }
 }
