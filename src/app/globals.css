@@ -80,6 +80,24 @@ body {
   flex-direction: column;
   gap: 10px;
 }
+.search-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.search-row input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #13202a;
+  color: var(--text);
+  padding: 9px 10px;
+}
+.tag-row {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--accent-2);
+}
 
 .thread-card {
   border: 1px solid var(--line);
