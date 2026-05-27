@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
 
 type Message = { id: string; role: string; content: string };
 type Conversation = {
@@ -13,6 +17,58 @@ type Conversation = {
   tags: string[];
   messages: Message[];
 };
+type ColorTag = { label: string; color: string };
+const TAG_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6"];
+const COLOR_TAG_RE = /^(.+)::(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/;
+
+function CodeBlock({ className, children }: { className?: string; children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const text = String(children || "").replace(/\n$/, "");
+  const lang = className?.replace("language-", "") || "text";
+
+  return (
+    <div className="code-block-wrap">
+      <div className="code-head">
+        <span>{lang}</span>
+        <button
+          className="mini-btn"
+          onClick={async () => {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="code-block"><code className={className}>{children}</code></pre>
+    </div>
+  );
+}
+
+function MessageContent({ message }: { message: Message }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{
+        code({ className, children, ...props }) {
+          const inline = !(className || "").includes("language-") && String(children || "").indexOf("\n") === -1;
+          if (inline) return <code {...props}>{children}</code>;
+          return <CodeBlock className={className}>{children}</CodeBlock>;
+        },
+        blockquote({ children }) {
+          return <div className="callout">{children}</div>;
+        },
+        a({ href, children }) {
+          return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+        },
+      }}
+    >
+      {message.content}
+    </ReactMarkdown>
+  );
+}
 
 export default function ChatUI() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -22,6 +78,20 @@ export default function ChatUI() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [openNewMenu, setOpenNewMenu] = useState(false);
+  const [tagDrafts, setTagDrafts] = useState<Record<string, { label: string; color: string }>>({});
+  const [folders, setFolders] = useState<string[]>([]);
+
+  function parseColorTag(tag: string): ColorTag | null {
+    const match = tag.match(COLOR_TAG_RE);
+    if (!match) return null;
+    return { label: match[1], color: match[2] };
+  }
+
+  function serializeColorTag(tag: ColorTag) {
+    return `${tag.label}::${tag.color}`;
+  }
 
   async function parseJsonSafe(res: Response) {
     const text = await res.text();
@@ -50,6 +120,28 @@ export default function ChatUI() {
     () => conversations.find((c) => c.id === activeId) || null,
     [conversations, activeId]
   );
+  const folderNames = useMemo(() => {
+    const fromConversations = conversations
+      .map((c) => c.folder?.trim())
+      .filter((f): f is string => Boolean(f));
+    return Array.from(new Set([...folders, ...fromConversations]));
+  }, [conversations, folders]);
+  const unfiledConversations = useMemo(
+    () => conversations.filter((c) => !c.folder),
+    [conversations]
+  );
+
+  function onDragStartConversation(e: React.DragEvent<HTMLElement>, conversationId: string) {
+    e.dataTransfer.setData("text/plain", conversationId);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  async function onDropToFolder(e: React.DragEvent<HTMLDivElement>, folder: string) {
+    e.preventDefault();
+    const conversationId = e.dataTransfer.getData("text/plain");
+    if (!conversationId) return;
+    await updateConversation(conversationId, { folder });
+  }
 
   async function updateConversation(id: string, patch: Record<string, unknown>) {
     await fetch(`/api/conversations/${id}`, {
@@ -103,6 +195,84 @@ export default function ChatUI() {
     setActiveId(null);
     setError("");
     setInput("");
+    setOpenNewMenu(false);
+  }
+
+  function createNewFolder() {
+    const name = (window.prompt("Folder name", "") || "").trim();
+    if (!name) return;
+    setFolders((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    setOpenNewMenu(false);
+  }
+
+  function downloadTranscript() {
+    if (!active) return;
+    const text = active.messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n---\n\n");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${active.title.replace(/\s+/g, "-") || "chat"}-transcript.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderConversationCard(c: Conversation) {
+    return (
+      <article
+        key={c.id}
+        className={`thread-card ${c.id === activeId ? "active" : ""}`}
+        onClick={() => setActiveId(c.id)}
+        draggable
+        onDragStart={(e) => onDragStartConversation(e, c.id)}
+      >
+        <div className="thread-top">
+          <h3>{c.title}</h3>
+          <div className="thread-menu-wrap">
+            <button className="menu-btn" onClick={(e) => { e.stopPropagation(); setOpenMenuId((prev) => (prev === c.id ? null : c.id)); }}>
+              ⋯
+            </button>
+            {openMenuId === c.id && (
+              <div className="thread-menu" onClick={(e) => e.stopPropagation()}>
+                <button className="menu-item" onClick={() => updateConversation(c.id, { isPinned: !c.isPinned })}>{c.isPinned ? "Unpin" : "Pin"}</button>
+                <button className="menu-item" onClick={() => { const title = window.prompt("Rename conversation", c.title); if (title !== null) updateConversation(c.id, { title }); setOpenMenuId(null); }}>Rename</button>
+                <button className="menu-item" onClick={() => { updateConversation(c.id, { isArchived: !c.isArchived }); setOpenMenuId(null); }}>{c.isArchived ? "Unarchive" : "Archive"}</button>
+                <button className="menu-item" onClick={() => {
+                  const labelInput = window.prompt("Label name", "");
+                  const label = (labelInput || "").trim();
+                  if (!label) return;
+                  const currentColor = tagDrafts[c.id]?.color || TAG_COLORS[0];
+                  const colorInput = window.prompt(`Label color (hex). Try: ${TAG_COLORS.join(", ")}`, currentColor);
+                  const color = (colorInput || currentColor).trim();
+                  const encoded = serializeColorTag({ label, color });
+                  const existing = c.tags.filter((tag) => tag !== encoded);
+                  updateConversation(c.id, { tags: [...existing, encoded] });
+                  setTagDrafts((prev) => ({ ...prev, [c.id]: { label: "", color } }));
+                  setOpenMenuId(null);
+                }}>Add Label</button>
+                {c.status === "active" && <button className="menu-item" onClick={() => { updateConversationStatus(c.id, "pause"); setOpenMenuId(null); }}>Pause</button>}
+                {c.status === "paused" && <button className="menu-item" onClick={() => { updateConversationStatus(c.id, "resume"); setOpenMenuId(null); }}>Resume</button>}
+                <button className="menu-item danger" onClick={() => { deleteConversation(c.id); setOpenMenuId(null); }}>Delete</button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="thread-meta">
+          <span className={`status ${c.status}`}>{c.status}</span>
+          {c.isPinned && <span className="status"> pinned</span>}
+          {c.isArchived && <span className="status"> archived</span>}
+        </div>
+        {!!c.tags.length && (
+          <div className="tag-row">
+            {c.tags.map((tag) => {
+              const parsed = parseColorTag(tag);
+              if (!parsed) return <span key={tag} className="plain-tag">#{tag}</span>;
+              return <span key={tag} className="color-tag"><span className="color-dot" style={{ backgroundColor: parsed.color }} />{parsed.label}</span>;
+            })}
+          </div>
+        )}
+      </article>
+    );
   }
 
   return (
@@ -113,7 +283,15 @@ export default function ChatUI() {
             <p className="brand-kicker">OlliveAI</p>
             <h2 className="brand-title">Conversations</h2>
           </div>
-          <button className="ghost-btn" onClick={startNewConversation}>New</button>
+          <div className="new-menu-wrap">
+            <button className="ghost-btn" onClick={() => setOpenNewMenu((v) => !v)}>New</button>
+            {openNewMenu && (
+              <div className="thread-menu new-menu">
+                <button className="menu-item" onClick={startNewConversation}>New Chat</button>
+                <button className="menu-item" onClick={createNewFolder}>New Folder</button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="search-row">
@@ -121,49 +299,24 @@ export default function ChatUI() {
           <button className="mini-btn" onClick={() => setShowArchived((v) => !v)}>{showArchived ? "Hide archived" : "Show archived"}</button>
         </div>
 
+        {!!folderNames.length && (
+          <div className="folder-section">
+            <p className="section-title">Folders</p>
+            <div className="folder-list">
+              {folderNames.map((folder) => (
+                <div key={folder} className="folder-dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDropToFolder(e, folder)}>
+                  <p className="folder-name">{folder}</p>
+                  <div className="folder-conversations">
+                    {conversations.filter((c) => c.folder === folder).map((c) => renderConversationCard(c))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="thread-list">
-          {conversations.map((c) => (
-            <article key={c.id} className={`thread-card ${c.id === activeId ? "active" : ""}`} onClick={() => setActiveId(c.id)}>
-              <h3>{c.title}</h3>
-              <div className="thread-meta">
-                <span className={`status ${c.status}`}>{c.status}</span>
-                {c.isPinned && <span className="status"> pinned</span>}
-                {c.isArchived && <span className="status"> archived</span>}
-                {c.folder && <span className="status"> folder:{c.folder}</span>}
-              </div>
-              {!!c.tags.length && <p className="tag-row">{c.tags.map((tag) => `#${tag}`).join(" ")}</p>}
-              <div className="thread-actions">
-                <button className="mini-btn" onClick={(e) => { e.stopPropagation(); updateConversation(c.id, { isPinned: !c.isPinned }); }}>
-                  {c.isPinned ? "Unpin" : "Pin"}
-                </button>
-                <button className="mini-btn" onClick={(e) => {
-                  e.stopPropagation();
-                  const title = window.prompt("Rename conversation", c.title);
-                  if (title !== null) updateConversation(c.id, { title });
-                }}>Rename</button>
-                <button className="mini-btn" onClick={(e) => {
-                  e.stopPropagation();
-                  updateConversation(c.id, { isArchived: !c.isArchived });
-                }}>{c.isArchived ? "Unarchive" : "Archive"}</button>
-                <button className="mini-btn" onClick={(e) => {
-                  e.stopPropagation();
-                  const folder = window.prompt("Set folder (empty clears)", c.folder || "") ?? undefined;
-                  if (folder !== undefined) updateConversation(c.id, { folder: folder.trim() ? folder.trim() : null });
-                }}>Folder</button>
-                <button className="mini-btn" onClick={(e) => {
-                  e.stopPropagation();
-                  const tagsRaw = window.prompt("Comma-separated tags", c.tags.join(", "));
-                  if (tagsRaw !== null) {
-                    const tags = tagsRaw.split(",").map((t) => t.trim()).filter(Boolean);
-                    updateConversation(c.id, { tags });
-                  }
-                }}>Tags</button>
-                {c.status === "active" && <button className="mini-btn" onClick={(e) => { e.stopPropagation(); updateConversationStatus(c.id, "pause"); }}>Pause</button>}
-                {c.status === "paused" && <button className="mini-btn" onClick={(e) => { e.stopPropagation(); updateConversationStatus(c.id, "resume"); }}>Resume</button>}
-                <button className="mini-btn danger" onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}>Delete</button>
-              </div>
-            </article>
-          ))}
+          {unfiledConversations.map((c) => renderConversationCard(c))}
         </div>
       </aside>
 
@@ -171,6 +324,7 @@ export default function ChatUI() {
         <header className="chat-header">
           <h1>{active ? active.title : "Start a new conversation"}</h1>
           <p>Ask anything. Conversations are logged with inference telemetry.</p>
+          <button className="mini-btn transcript-btn" onClick={downloadTranscript} disabled={!active}>Download transcript</button>
         </header>
 
         {error && <p className="error-banner">{error}</p>}
@@ -179,7 +333,7 @@ export default function ChatUI() {
           {active?.messages?.length ? (
             active.messages.map((m, i) => (
               <div key={m.id} className={`bubble-row ${m.role === "user" ? "user" : "assistant"}`} style={{ animationDelay: `${i * 30}ms` }}>
-                <div className="bubble"><p>{m.content}</p></div>
+                <div className="bubble"><MessageContent message={m} /></div>
               </div>
             ))
           ) : (

@@ -21,15 +21,22 @@ function preview(text: string, max = 280): string {
 }
 
 async function sendLog(event: LogEvent): Promise<void> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  if (!baseUrl) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
   try {
     await fetch(`${baseUrl}/api/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(event),
       cache: "no-store",
+      signal: controller.signal,
     });
   } catch {}
+  finally {
+    clearTimeout(timer);
+  }
 }
 
 function providerModel(provider: ProviderName): string {
@@ -149,7 +156,7 @@ export async function callLLMWithLogging(params: {
     });
     const responseTs = new Date();
 
-    await sendLog({
+    void sendLog({
       conversationId: params.conversationId,
       provider: result.provider,
       model: result.model,
@@ -168,7 +175,7 @@ export async function callLLMWithLogging(params: {
     return { output: result.response.output };
   } catch (error) {
     const responseTs = new Date();
-    await sendLog({
+    void sendLog({
       conversationId: params.conversationId,
       provider: "gemini",
       model: providerModel("gemini"),
@@ -203,7 +210,7 @@ export async function streamLLMWithLogging(params: {
     });
 
     const responseTs = new Date();
-    await sendLog({
+    void sendLog({
       conversationId: params.conversationId,
       provider: result.provider,
       model: result.model,
@@ -225,7 +232,7 @@ export async function streamLLMWithLogging(params: {
     return { output: result.response.output };
   } catch (error) {
     const responseTs = new Date();
-    await sendLog({
+    void sendLog({
       conversationId: params.conversationId,
       provider: "gemini",
       model: providerModel("gemini"),
