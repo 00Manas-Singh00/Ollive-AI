@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireSessionUser } from "@/lib/auth";
 
 export async function GET(req: Request) {
   try {
+    const user = await requireSessionUser();
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
     const includeArchived = searchParams.get("includeArchived") === "true";
@@ -11,6 +13,7 @@ export async function GET(req: Request) {
 
     const conversations = await prisma.conversation.findMany({
       where: {
+        userId: user.id,
         ...(includeArchived ? {} : { isArchived: false }),
         ...(folder ? { folder } : {}),
         ...(tag ? { tags: { has: tag } } : {}),
@@ -28,9 +31,9 @@ export async function GET(req: Request) {
     });
     return NextResponse.json({ conversations });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to fetch conversations" },
-      { status: 500 }
-    );
+    if (error instanceof Error && error.message === "UNAUTHORIZED") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed" }, { status: 500 });
   }
 }

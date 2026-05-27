@@ -143,6 +143,56 @@ body {
   color: var(--text);
   padding: 9px 10px;
 }
+.search-row select {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #13202a;
+  color: var(--text);
+  padding: 9px 10px;
+}
+.bulk-bar {
+  border: 1px solid #315164;
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  background: #132431;
+}
+.bulk-bar p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent-2);
+}
+.thread-title-wrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.thread-card.selected {
+  outline: 1px solid #66d9c0;
+}
+.folder-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.folder-actions {
+  display: flex;
+  gap: 6px;
+}
+.no-folder-dropzone {
+  border: 1px dashed #3b5569;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
 .tag-row {
   margin: 8px 0 0;
   display: flex;

@@ -8,20 +8,31 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  name          String
+  createdAt     DateTime       @default(now())
+  conversations Conversation[]
+}
+
 model Conversation {
   id         String      @id @default(cuid())
+  userId     String
   title      String
   status     String      @default("active")
   isArchived Boolean     @default(false)
   isPinned   Boolean     @default(false)
   folder     String?
   tags       String[]    @default([])
+  shareToken String?     @unique
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   messages   ChatMessage[]
   logs       InferenceLog[]
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([isArchived, isPinned, updatedAt])
+  @@index([userId, isArchived, isPinned, updatedAt])
 }
 
 model ChatMessage {
@@ -62,7 +73,6 @@ model InferenceLog {
   @@index([provider, model])
   @@index([status, createdAt])
 }
-
 
 model IngestionEvent {
   id             String   @id
