@@ -30,9 +30,72 @@ model Conversation {
   updatedAt  DateTime    @updatedAt
   messages   ChatMessage[]
   logs       InferenceLog[]
+  safetyLogs SafetyAuditLog[]
+  promptDecisions PromptDecision[]
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isArchived, isPinned, updatedAt])
+}
+
+model PromptProfile {
+  id           String         @id @default(cuid())
+  key          String         @unique
+  description  String?
+  activeVersion Int?
+  createdAt    DateTime       @default(now())
+  versions     PromptVersion[]
+
+  @@index([key, activeVersion])
+}
+
+model PromptVersion {
+  id              String   @id @default(cuid())
+  profileId       String
+  version         Int
+  basePrompt      String
+  variantA        String?
+  variantB        String?
+  abRatioA        Int      @default(50)
+  modelOverrides  Json?
+  isRollbackPoint Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  profile PromptProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, version])
+  @@index([profileId, createdAt])
+}
+
+model PromptDecision {
+  id             String   @id @default(cuid())
+  conversationId String
+  profileKey     String
+  version        Int
+  variant        String
+  model          String?
+  resolvedPrompt String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([profileKey, version, variant])
+}
+
+model SafetyAuditLog {
+  id             String   @id @default(cuid())
+  conversationId String
+  phase          String
+  action         String
+  reason         String?
+  categories     String[] @default([])
+  sample         String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([phase, action, createdAt])
 }
 
 model ChatMessage {

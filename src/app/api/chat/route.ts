@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { callLLMWithLogging } from "@/lib/llm";
 import { requireSessionUser } from "@/lib/auth";
+import { moderateInput, moderateOutput, refusalTemplate } from "@/lib/safety";
+import { resolveSystemPrompt } from "@/lib/prompt-manager";
+
+function sampleText(text: string) {
+  return text.length <= 300 ? text : `${text.slice(0, 300)}...`;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,12 +31,70 @@ export async function POST(req: NextRequest) {
       conversationId = conversation.id;
     }
 
+    const inputModeration = moderateInput(message);
+    if (inputModeration.blocked) {
+      const refusal = refusalTemplate(inputModeration.reason);
+      await prisma.safetyAuditLog.create({
+        data: {
+          conversationId,
+          phase: "input",
+          action: "blocked",
+          reason: inputModeration.reason,
+          categories: inputModeration.categories,
+          sample: sampleText(message),
+        },
+      });
+
+      const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: refusal } });
+      return NextResponse.json({ conversationId, message: assistantMessage, moderated: true });
+    }
+
+    await prisma.safetyAuditLog.create({
+      data: {
+        conversationId,
+        phase: "input",
+        action: "allowed",
+        categories: [],
+        sample: sampleText(message),
+      },
+    });
+
     await prisma.chatMessage.create({ data: { conversationId, role: "user", content: message } });
 
     const contextMessages = await prisma.chatMessage.findMany({ where: { conversationId }, orderBy: { createdAt: "desc" }, take: 8 });
-    const llmMessages = [{ role: "system" as const, content: "You are a concise, helpful assistant. Avoid repeating the same responses in a conversation. Prefer fresh, original responses." }, ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))];
+    const model = provider === "grok" ? (process.env.GROK_MODEL || "grok-3-mini") : (process.env.GEMINI_MODEL || "gemini-2.5-flash");
+    const promptDecision = await resolveSystemPrompt({ conversationId, model });
+    const llmMessages = [{ role: "system" as const, content: promptDecision.prompt }, ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))];
 
     const completion = await callLLMWithLogging({ conversationId, messages: llmMessages });
+
+    const outputModeration = moderateOutput(completion.output);
+    if (outputModeration.blocked) {
+      const refusal = refusalTemplate(outputModeration.reason);
+      await prisma.safetyAuditLog.create({
+        data: {
+          conversationId,
+          phase: "output",
+          action: "blocked",
+          reason: outputModeration.reason,
+          categories: outputModeration.categories,
+          sample: sampleText(completion.output),
+        },
+      });
+      const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: refusal } });
+      return NextResponse.json({ conversationId, message: assistantMessage, moderated: true });
+    }
+
+    await prisma.safetyAuditLog.create({
+      data: {
+        conversationId,
+        phase: "output",
+        action: "allowed",
+        categories: [],
+        sample: sampleText(completion.output),
+      },
+    });
+
     const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: completion.output } });
 
     return NextResponse.json({ conversationId, message: assistantMessage });
@@ -40,7 +104,7 @@ export async function POST(req: NextRequest) {
     const lower = message.toLowerCase();
     if (lower.includes("incorrect api key") || lower.includes("invalid api key") || lower.includes("unauthorized")) return NextResponse.json({ error: `Provider auth error: ${message}` }, { status: 401 });
     if (lower.includes("rate limit") || lower.includes("quota") || lower.includes("insufficient_quota")) return NextResponse.json({ error: `Provider quota/rate-limit error: ${message}` }, { status: 429 });
-    if (lower.includes("model") && (lower.includes("not found") || lower.includes("does not exist"))) return NextResponse.json({ error: `Model configuration error: ${message}` }, { status: 400 });
+    if (lower.includes("model") && (lower.includes("not found") || lower.includes("does not exist")) ) return NextResponse.json({ error: `Model configuration error: ${message}` }, { status: 400 });
     return NextResponse.json({ error: `Chat request failed: ${message}` }, { status: 502 });
   }
 }
