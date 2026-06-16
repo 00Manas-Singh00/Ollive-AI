@@ -538,3 +538,13 @@ body {
     padding: 12px;
   }
 }
+
+.bubble.streaming { opacity: 0.92; }
+.cursor-blink {
+  display: inline-block;
+  color: var(--accent);
+  animation: blink 0.8s step-end infinite;
+  margin-left: 2px;
+  font-size: 0.9em;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
