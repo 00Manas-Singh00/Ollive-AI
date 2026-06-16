@@ -248,12 +248,38 @@ export async function streamLLMWithLogging(params: {
   }
 }
 
+function toGeminiContents(messages: LLMMessage[]) {
+  // Gemini roles: 'user' | 'model'. System messages are prepended to the first user turn.
+  const systemParts: string[] = [];
+  const contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> = [];
+
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemParts.push(m.content);
+      continue;
+    }
+    const role = m.role === "assistant" ? "model" : "user";
+    if (systemParts.length && contents.length === 0 && role === "user") {
+      contents.push({ role: "user", parts: [{ text: `${systemParts.join("\n\n")}\n\n${m.content}` }] });
+      systemParts.length = 0;
+    } else {
+      contents.push({ role, parts: [{ text: m.content }] });
+    }
+  }
+
+  // Flush any remaining system content as a standalone user turn (edge case: no user message yet)
+  if (systemParts.length) {
+    contents.push({ role: "user", parts: [{ text: systemParts.join("\n\n") }] });
+  }
+
+  return contents;
+}
+
 async function callGemini(params: { model: string; messages: LLMMessage[] }) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
-  const prompt = params.messages.map((m) => `${m.role}: ${m.content}`).join("\n");
   const response = await geminiClient.models.generateContent({
     model: params.model,
-    contents: prompt,
+    contents: toGeminiContents(params.messages),
     config: { temperature: 0.9, maxOutputTokens: 900 },
   });
 
@@ -272,7 +298,6 @@ async function streamGemini(params: {
   isAborted?: () => boolean;
 }) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
-  const prompt = params.messages.map((m) => `${m.role}: ${m.content}`).join("\n");
   const startedAt = Date.now();
   let firstTokenAt: number | null = null;
   let output = "";
@@ -282,7 +307,7 @@ async function streamGemini(params: {
 
   const stream = await geminiClient.models.generateContentStream({
     model: params.model,
-    contents: prompt,
+    contents: toGeminiContents(params.messages),
     config: { temperature: 0.9, maxOutputTokens: 900 },
   });
 
