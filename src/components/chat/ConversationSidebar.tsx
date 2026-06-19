@@ -2,7 +2,7 @@
 
 type Message = { id: string; role: string; content: string };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[] };
-type User = { id: string; email: string; name: string };
+type User = { id: string; email: string; name: string; isAdmin?: boolean };
 type ColorTag = { label: string; color: string };
 
 const TAG_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6"];
@@ -135,6 +135,21 @@ export default function ConversationSidebar({
         <button className="mini-btn" onClick={onToggleArchived}>{showArchived ? "Hide archived" : "Show archived"}</button>
       </div>
 
+      {user.isAdmin && (
+        <a
+          href="/analytics"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, fontSize: "0.82rem",
+            color: "var(--text-muted)", textDecoration: "none", padding: "6px 8px",
+            borderRadius: 6, marginBottom: 8,
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(255,255,255,0.06)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "transparent"; }}
+        >
+          📊 Analytics
+        </a>
+      )}
+
       {folderNames.map((folder) => (
         <div key={folder} className="folder-dropzone">
           <p className="folder-name">{folder}</p>
@@ -149,6 +164,7 @@ export default function ConversationSidebar({
           <ConversationCard key={c.id} {...cardProps(c)} />
         ))}
       </div>
+
     </aside>
   );
 }
