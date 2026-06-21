@@ -2,7 +2,8 @@
 
 type Message = { id: string; role: string; content: string };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[] };
-type User = { id: string; email: string; name: string; isAdmin?: boolean };
+type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
+type User = { id: string; email: string; name: string; role?: UserRole };
 type ColorTag = { label: string; color: string };
 
 const TAG_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#14b8a6"];
@@ -135,7 +136,7 @@ export default function ConversationSidebar({
         <button className="mini-btn" onClick={onToggleArchived}>{showArchived ? "Hide archived" : "Show archived"}</button>
       </div>
 
-      {user.isAdmin && (
+      {(user.role === "ANALYST" || user.role === "PROMPT_EDITOR" || user.role === "ADMIN") && (
         <a
           href="/analytics"
           style={{
@@ -149,7 +150,7 @@ export default function ConversationSidebar({
           📊 Analytics
         </a>
       )}
-      {user.isAdmin && (
+      {(user.role === "PROMPT_EDITOR" || user.role === "ADMIN") && (
         <a
           href="/admin/prompts"
           style={{
@@ -161,6 +162,20 @@ export default function ConversationSidebar({
           onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "transparent"; }}
         >
           ✏️ Prompt Studio
+        </a>
+      )}
+      {user.role === "ADMIN" && (
+        <a
+          href="/admin/users"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, fontSize: "0.82rem",
+            color: "var(--text-muted)", textDecoration: "none", padding: "6px 8px",
+            borderRadius: 6, marginBottom: 8,
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(255,255,255,0.06)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "transparent"; }}
+        >
+          👥 Users
         </a>
       )}
 

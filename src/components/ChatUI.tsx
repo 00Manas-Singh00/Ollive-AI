@@ -8,7 +8,8 @@ import ChatInput from "@/components/chat/ChatInput";
 
 type Message = { id: string; role: string; content: string };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[] };
-type User = { id: string; email: string; name: string; isAdmin?: boolean };
+type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
+type User = { id: string; email: string; name: string; role?: UserRole };
 
 async function parseJsonSafe(res: Response) {
   const t = await res.text();

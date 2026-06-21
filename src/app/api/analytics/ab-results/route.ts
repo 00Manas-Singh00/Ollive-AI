@@ -1,11 +1,12 @@
 import { requireSessionUser } from "@/lib/auth";
+import { requireRole } from "@/lib/rbac";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
   try {
     const user = await requireSessionUser();
-    if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    requireRole(user, "ANALYST");
 
     const { searchParams } = req.nextUrl;
     const from = searchParams.get("from") ? new Date(searchParams.get("from")!) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
