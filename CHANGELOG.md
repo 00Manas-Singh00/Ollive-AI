@@ -1,5 +1,26 @@
 # Changelog
 
+## Phase 2 — Prompt Studio (2026-06-19)
+
+### Added
+- `GET /api/admin/prompts` — list all prompt profiles with versions (admin only)
+- `POST /api/admin/prompts` — create a new prompt profile with initial version (Zod-validated)
+- `GET /api/admin/prompts/:profileKey/versions` — list versions for a profile
+- `POST /api/admin/prompts/:profileKey/versions` — create a new version (auto-increments version number)
+- `POST /api/admin/prompts/:profileKey/activate` — activate a specific version
+- `POST /api/admin/prompts/:profileKey/rollback` — rollback to latest checkpoint version
+- `src/lib/diff.ts` — minimal Myers character-level diff algorithm (no external dependency)
+- `src/app/admin/prompts/page.tsx` — Prompt Studio: two-pane UI with profile list, version editor (basePrompt, variantA/B, A/B ratio slider, model overrides JSON), version history table with load/activate/diff actions, side-by-side diff viewer, and test panel
+- `promptVersionOverride` optional field on `POST /api/chat` — overrides the active prompt version for a single request; logged in `PromptDecision.model` field with `|override:vN` suffix
+- "Prompt Studio" link in `ConversationSidebar` visible only to admins
+
+### Changed
+- `resolveSystemPrompt()` accepts optional `versionOverride` parameter
+- Chat route parses and threads `promptVersionOverride` from request body
+
+### Migrations
+- None (no schema changes in Phase 2)
+
 ## Phase 1 — Analytics & Observability Dashboard (2026-06-17)
 
 ### Added
