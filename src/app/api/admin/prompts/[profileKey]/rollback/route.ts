@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSessionUser } from "@/lib/auth";
+import { requireRole } from "@/lib/rbac";
 
 async function requireAdmin() {
   const user = await requireSessionUser();
-  if (!user.isAdmin) throw Object.assign(new Error("FORBIDDEN"), { status: 403 });
+  requireRole(user, "ADMIN");
   return user;
 }
 

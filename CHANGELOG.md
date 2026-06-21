@@ -1,5 +1,24 @@
 # Changelog
 
+## Phase 3 — Role-Based Access Control (2026-06-22)
+
+### Added
+- `UserRole` enum (`VIEWER`, `ANALYST`, `PROMPT_EDITOR`, `ADMIN`) on `User` model; migration `20260622_phase3_user_roles` — replaces `isAdmin Boolean`; existing admins migrated to `ADMIN`
+- `src/lib/rbac.ts` — `requireRole(user, minRole)` helper; throws `FORBIDDEN` (→ 403) if user's role rank is below minimum
+- `GET /api/admin/users` — list all users with name, email, role, conversation count, last active (ADMIN only)
+- `PATCH /api/admin/users/:id` — update a user's role; Zod-validated body `{ role }` (ADMIN only)
+- `src/app/admin/users/page.tsx` — user management table with inline role dropdown; PATCH on change
+
+### Changed
+- All `/api/analytics/*` routes now use `requireRole(user, "ANALYST")` instead of `isAdmin` check
+- All `/api/admin/prompts/*` routes now use `requireRole(user, "ADMIN")` instead of `isAdmin` check
+- `/api/auth/me` and `/api/auth/signin` now return `role` instead of `isAdmin`
+- `ConversationSidebar`: Analytics link visible to `ANALYST`+; Prompt Studio visible to `PROMPT_EDITOR`+; Users link visible to `ADMIN` only
+- `analytics/page.tsx`: SSR guard uses role check instead of `isAdmin`
+
+### Migrations
+- `20260622_phase3_user_roles` — adds `UserRole` enum, drops `isAdmin`, migrates admins to `ADMIN`
+
 ## Phase 2 — Prompt Studio (2026-06-19)
 
 ### Added
