@@ -22,6 +22,7 @@ async function buildConversation(req: NextRequest) {
   const body = await req.json();
   const message: string = (body.message || "").trim();
   let conversationId: string | undefined = body.conversationId;
+  const promptVersionOverride: number | undefined = body.promptVersionOverride ? Number(body.promptVersionOverride) : undefined;
   if (!message) throw Object.assign(new Error("Message is required"), { status: 400 });
 
   let conversation;
@@ -62,7 +63,7 @@ async function buildConversation(req: NextRequest) {
       ? process.env.GROK_MODEL || "grok-3-mini"
       : process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-  const promptDecision = await resolveSystemPrompt({ conversationId, model });
+  const promptDecision = await resolveSystemPrompt({ conversationId, model, versionOverride: promptVersionOverride });
   const llmMessages = [
     { role: "system" as const, content: promptDecision.prompt },
     ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),

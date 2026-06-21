@@ -149,6 +149,20 @@ export default function ConversationSidebar({
           📊 Analytics
         </a>
       )}
+      {user.isAdmin && (
+        <a
+          href="/admin/prompts"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, fontSize: "0.82rem",
+            color: "var(--text-muted)", textDecoration: "none", padding: "6px 8px",
+            borderRadius: 6, marginBottom: 8,
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "rgba(255,255,255,0.06)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.background = "transparent"; }}
+        >
+          ✏️ Prompt Studio
+        </a>
+      )}
 
       {folderNames.map((folder) => (
         <div key={folder} className="folder-dropzone">
