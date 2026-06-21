@@ -548,3 +548,108 @@ body {
   font-size: 0.9em;
 }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── Annotation bar ─────────────────────────────────── */
+.annotation-bar {
+  margin-top: 6px;
+  padding: 0 2px;
+}
+
+.annotation-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.annot-thumb {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 3px 6px;
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  transition: background 150ms, opacity 150ms;
+  opacity: 0.55;
+}
+.annot-thumb:hover { background: var(--panel-strong); opacity: 1; }
+.annot-thumb.active { background: var(--panel-strong); opacity: 1; }
+.annot-thumb:disabled { cursor: default; }
+
+.annot-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.star-row {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms;
+}
+.star-row.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.star-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--line);
+  padding: 2px;
+  transition: color 120ms;
+  line-height: 1;
+}
+.star-btn.lit { color: #f5a623; }
+.star-btn:disabled { cursor: default; }
+
+.annot-note-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 3px 6px;
+  border-radius: 6px;
+  opacity: 0.5;
+  transition: opacity 150ms, background 150ms;
+}
+.annot-note-btn:hover, .annot-note-btn.has-note { opacity: 1; background: var(--panel-strong); }
+
+.note-expand {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.note-textarea {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  resize: vertical;
+  width: 100%;
+  max-width: 520px;
+  outline: none;
+}
+.note-textarea:focus { border-color: var(--accent); }
+
+.note-actions {
+  display: flex;
+  gap: 6px;
+}
+.mini-btn.ghost {
+  background: transparent;
+  color: var(--muted);
+}
