@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { retrieveRelevantChunks } from "@/lib/rag";
 
 type ModelOverrides = Record<string, string>;
 
@@ -38,7 +39,7 @@ export async function ensureDefaultPromptProfile() {
   return profile;
 }
 
-export async function resolveSystemPrompt(params: { conversationId: string; model?: string; versionOverride?: number }) {
+export async function resolveSystemPrompt(params: { conversationId: string; model?: string; versionOverride?: number; ragQuery?: string }) {
   const profile = await ensureDefaultPromptProfile();
   const activeVersion = params.versionOverride ?? profile.activeVersion ?? 1;
   const version = await prisma.promptVersion.findFirst({ where: { profileId: profile.id, version: activeVersion } });
@@ -55,6 +56,11 @@ export async function resolveSystemPrompt(params: { conversationId: string; mode
     const pct = stablePercent(`${params.conversationId}:${profile.key}:${version.version}`);
     variant = pct < version.abRatioA ? "A" : "B";
     resolvedPrompt = variant === "A" ? version.variantA : version.variantB;
+  }
+
+  const ragChunks = await retrieveRelevantChunks(params.ragQuery ?? "", params.conversationId, 3).catch(() => []);
+  if (ragChunks.length > 0) {
+    resolvedPrompt += `\n\n## Context\n${ragChunks.join("\n\n---\n\n")}`;
   }
 
   await prisma.promptDecision.create({

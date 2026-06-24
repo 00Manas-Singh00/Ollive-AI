@@ -236,8 +236,10 @@ export default function ChatUI() {
           value={input}
           loading={loading}
           disabled={loading || active?.status === "paused" || !!active?.isArchived}
+          conversationId={activeId}
           onChange={setInput}
           onSend={send}
+          onFileUploaded={() => setError("")}
         />
       </section>
     </main>

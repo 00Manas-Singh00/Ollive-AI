@@ -173,7 +173,7 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 4 — Collaborative Annotation ⬜ NOT STARTED
+### Phase 4 — Collaborative Annotation ✅ COMPLETE
 
 **New Prisma model:** `MessageAnnotation` (upsert per user per message; `@@unique([messageId, userId])`).
 

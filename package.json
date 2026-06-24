@@ -18,11 +18,13 @@
     "eval:report": "cat evals/latest-report.json"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
     "@google/genai": "^0.14.1",
     "@prisma/client": "^6.8.2",
     "bullmq": "^5.10.3",
     "ioredis": "^5.4.1",
     "next": "^15.5.18",
+    "openai": "^6.44.0",
     "prisma": "^6.8.2",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
