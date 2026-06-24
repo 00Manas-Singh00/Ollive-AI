@@ -63,7 +63,7 @@ async function buildConversation(req: NextRequest) {
       ? process.env.GROK_MODEL || "grok-3-mini"
       : process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-  const promptDecision = await resolveSystemPrompt({ conversationId, model, versionOverride: promptVersionOverride });
+  const promptDecision = await resolveSystemPrompt({ conversationId, model, versionOverride: promptVersionOverride, ragQuery: message });
   const llmMessages = [
     { role: "system" as const, content: promptDecision.prompt },
     ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),

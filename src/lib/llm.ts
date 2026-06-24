@@ -1,8 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
 
 type LLMMessage = { role: string; content: string };
-type ProviderName = "gemini" | "grok";
+type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama";
 type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
 
 type ProviderResponse = {
@@ -15,6 +17,17 @@ type ProviderResponse = {
 };
 
 const geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+function openaiClient(baseURL?: string): OpenAI {
+  return new OpenAI({
+    apiKey: baseURL ? "ollama" : (process.env.OPENAI_API_KEY ?? ""),
+    ...(baseURL ? { baseURL } : {}),
+  });
+}
+
+function anthropicClient(): Anthropic {
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
+}
 
 function preview(text: string, max = 280): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
@@ -40,24 +53,30 @@ async function sendLog(event: LogEvent): Promise<void> {
 }
 
 function providerModel(provider: ProviderName): string {
-  return provider === "grok"
-    ? process.env.GROK_MODEL || "grok-3-mini"
-    : process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  if (provider === "grok") return process.env.GROK_MODEL || "grok-3-mini";
+  if (provider === "openai") return process.env.OPENAI_MODEL || "gpt-4o-mini";
+  if (provider === "anthropic") return process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  if (provider === "ollama") return process.env.OLLAMA_MODEL || "llama3";
+  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
 }
 
 function configuredProviders(): ProviderName[] {
   const list: ProviderName[] = [];
   if (process.env.GEMINI_API_KEY) list.push("gemini");
   if (process.env.GROK_API_KEY) list.push("grok");
+  if (process.env.OPENAI_API_KEY) list.push("openai");
+  if (process.env.ANTHROPIC_API_KEY) list.push("anthropic");
+  if (process.env.OLLAMA_BASE_URL) list.push("ollama");
   return list;
 }
 
 function providerOrder(policy: RoutingPolicy): ProviderName[] {
-  if (policy === "quality") return ["grok", "gemini"];
-  if (policy === "latency") return ["gemini", "grok"];
-  if (policy === "cost") return ["gemini", "grok"];
   const manual = (process.env.LLM_PROVIDER || "gemini").toLowerCase() as ProviderName;
-  return manual === "grok" ? ["grok", "gemini"] : ["gemini", "grok"];
+  const all: ProviderName[] = ["gemini", "grok", "openai", "anthropic", "ollama"];
+  if (policy === "quality") return ["anthropic", "openai", "grok", "gemini", "ollama"];
+  if (policy === "latency") return ["gemini", "ollama", "openai", "grok", "anthropic"];
+  if (policy === "cost") return ["ollama", "gemini", "grok", "openai", "anthropic"];
+  return [manual, ...all.filter((p) => p !== manual)];
 }
 
 function getProviderPlan(): ProviderName[] {
@@ -121,24 +140,35 @@ async function runProvider(params: {
   onToken?: (token: string) => void;
   isAborted?: () => boolean;
 }): Promise<ProviderResponse> {
-  if (params.provider === "grok") {
-    const resp = await callGrok({ model: params.model, messages: params.messages });
-    if (params.mode === "stream" && params.onToken && !params.isAborted?.()) {
-      params.onToken(resp.output);
-    }
+  const { provider, model, mode, messages, onToken, isAborted } = params;
+
+  if (provider === "grok") {
+    const resp = await callGrok({ model, messages });
+    if (mode === "stream" && onToken && !isAborted?.()) onToken(resp.output);
     return resp;
   }
 
-  if (params.mode === "stream") {
-    return streamGemini({
-      model: params.model,
-      messages: params.messages,
-      onToken: params.onToken || (() => {}),
-      isAborted: params.isAborted,
-    });
+  if (provider === "openai") {
+    if (mode === "stream") return streamOpenAI({ model, messages, onToken: onToken || (() => {}), isAborted });
+    return callOpenAI({ model, messages });
   }
 
-  return callGemini({ model: params.model, messages: params.messages });
+  if (provider === "anthropic") {
+    if (mode === "stream") return streamAnthropic({ model, messages, onToken: onToken || (() => {}), isAborted });
+    return callAnthropic({ model, messages });
+  }
+
+  if (provider === "ollama") {
+    const resp = await callOllama({ model, messages });
+    if (mode === "stream" && onToken && !isAborted?.()) onToken(resp.output);
+    return resp;
+  }
+
+  if (mode === "stream") {
+    return streamGemini({ model, messages, onToken: onToken || (() => {}), isAborted });
+  }
+
+  return callGemini({ model, messages });
 }
 
 export async function callLLMWithLogging(params: {
@@ -359,5 +389,173 @@ async function callGrok(params: { model: string; messages: LLMMessage[] }) {
     promptTokens: data?.usage?.prompt_tokens,
     completionTokens: data?.usage?.completion_tokens,
     totalTokens: data?.usage?.total_tokens,
+  };
+}
+
+function toOpenAIMessages(messages: LLMMessage[]): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return messages.map((m) => ({
+    role: m.role as "system" | "user" | "assistant",
+    content: m.content,
+  }));
+}
+
+async function callOpenAI(params: { model: string; messages: LLMMessage[] }): Promise<ProviderResponse> {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient();
+  const res = await client.chat.completions.create({
+    model: params.model,
+    messages: toOpenAIMessages(params.messages),
+    temperature: 0.9,
+    max_tokens: 900,
+  });
+  return {
+    output: res.choices[0]?.message?.content || "",
+    promptTokens: res.usage?.prompt_tokens,
+    completionTokens: res.usage?.completion_tokens,
+    totalTokens: res.usage?.total_tokens,
+  };
+}
+
+async function streamOpenAI(params: {
+  model: string;
+  messages: LLMMessage[];
+  onToken: (token: string) => void;
+  isAborted?: () => boolean;
+}): Promise<ProviderResponse> {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient();
+  const startedAt = Date.now();
+  let firstTokenAt: number | null = null;
+  let output = "";
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  const stream = await client.chat.completions.create({
+    model: params.model,
+    messages: toOpenAIMessages(params.messages),
+    temperature: 0.9,
+    max_tokens: 900,
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+
+  for await (const chunk of stream) {
+    if (params.isAborted?.()) break;
+    const token = chunk.choices[0]?.delta?.content || "";
+    if (token) {
+      if (firstTokenAt === null) firstTokenAt = Date.now();
+      output += token;
+      params.onToken(token);
+    }
+    if (chunk.usage) {
+      promptTokens = chunk.usage.prompt_tokens;
+      completionTokens = chunk.usage.completion_tokens;
+    }
+  }
+
+  return {
+    output,
+    ttftMs: firstTokenAt ? firstTokenAt - startedAt : undefined,
+    streamDurationMs: Date.now() - startedAt,
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens !== undefined && completionTokens !== undefined ? promptTokens + completionTokens : undefined,
+  };
+}
+
+function toAnthropicMessages(messages: LLMMessage[]): { system?: string; msgs: Anthropic.MessageParam[] } {
+  const systemParts: string[] = [];
+  const msgs: Anthropic.MessageParam[] = [];
+  for (const m of messages) {
+    if (m.role === "system") { systemParts.push(m.content); continue; }
+    msgs.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
+  }
+  return { system: systemParts.join("\n\n") || undefined, msgs };
+}
+
+async function callAnthropic(params: { model: string; messages: LLMMessage[] }): Promise<ProviderResponse> {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
+  const client = anthropicClient();
+  const { system, msgs } = toAnthropicMessages(params.messages);
+  const res = await client.messages.create({
+    model: params.model,
+    max_tokens: 900,
+    ...(system ? { system } : {}),
+    messages: msgs,
+  });
+  const output = res.content.filter((b) => b.type === "text").map((b) => (b as Anthropic.TextBlock).text).join("");
+  return {
+    output,
+    promptTokens: res.usage.input_tokens,
+    completionTokens: res.usage.output_tokens,
+    totalTokens: res.usage.input_tokens + res.usage.output_tokens,
+  };
+}
+
+async function streamAnthropic(params: {
+  model: string;
+  messages: LLMMessage[];
+  onToken: (token: string) => void;
+  isAborted?: () => boolean;
+}): Promise<ProviderResponse> {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
+  const client = anthropicClient();
+  const { system, msgs } = toAnthropicMessages(params.messages);
+  const startedAt = Date.now();
+  let firstTokenAt: number | null = null;
+  let output = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  const stream = await client.messages.create({
+    model: params.model,
+    max_tokens: 900,
+    ...(system ? { system } : {}),
+    messages: msgs,
+    stream: true,
+  });
+
+  for await (const event of stream) {
+    if (params.isAborted?.()) break;
+    if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+      const token = event.delta.text;
+      if (token) {
+        if (firstTokenAt === null) firstTokenAt = Date.now();
+        output += token;
+        params.onToken(token);
+      }
+    }
+    if (event.type === "message_delta" && event.usage) {
+      outputTokens = event.usage.output_tokens;
+    }
+    if (event.type === "message_start" && event.message.usage) {
+      inputTokens = event.message.usage.input_tokens;
+    }
+  }
+
+  return {
+    output,
+    ttftMs: firstTokenAt ? firstTokenAt - startedAt : undefined,
+    streamDurationMs: Date.now() - startedAt,
+    promptTokens: inputTokens,
+    completionTokens: outputTokens,
+    totalTokens: inputTokens + outputTokens,
+  };
+}
+
+async function callOllama(params: { model: string; messages: LLMMessage[] }): Promise<ProviderResponse> {
+  const baseURL = process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
+  const client = openaiClient(baseURL);
+  const res = await client.chat.completions.create({
+    model: params.model,
+    messages: toOpenAIMessages(params.messages),
+    temperature: 0.9,
+    max_tokens: 900,
+  });
+  return {
+    output: res.choices[0]?.message?.content || "",
+    promptTokens: res.usage?.prompt_tokens,
+    completionTokens: res.usage?.completion_tokens,
+    totalTokens: res.usage?.total_tokens,
   };
 }

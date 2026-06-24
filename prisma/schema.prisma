@@ -173,6 +173,30 @@ model IngestionEvent {
   @@index([conversationId, createdAt])
 }
 
+model KnowledgeDocument {
+  id             String           @id @default(cuid())
+  conversationId String?
+  userId         String
+  filename       String
+  content        String           @db.Text
+  createdAt      DateTime         @default(now())
+  chunks         KnowledgeChunk[]
+
+  @@index([userId, conversationId])
+}
+
+model KnowledgeChunk {
+  id         String            @id @default(cuid())
+  documentId String
+  chunkIndex Int
+  text       String            @db.Text
+  // embedding stored as JSON float array; upgrade path: migrate to pgvector Float[] with pg_vector extension
+  embedding  Json?
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
 model IngestionDLQ {
   id             String   @id @default(cuid())
   eventId        String

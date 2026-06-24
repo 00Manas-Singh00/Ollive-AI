@@ -1,5 +1,17 @@
 # Changelog
 
+## Phase 4 — Collaborative Annotation (2026-06-22)
+
+### Added
+- `MessageAnnotation` Prisma model (`rating`, `thumbs`, `comment`, `@@unique([messageId, userId])`); migration `20260622_phase4_message_annotations`
+- `POST /api/messages/:messageId/annotations` — Zod-validated upsert of the caller's own annotation
+- `GET /api/messages/:messageId/annotations` — own annotation only, except `ANALYST`/`ADMIN` which see all annotations for the message
+- `DELETE /api/messages/:messageId/annotations` — deletes the caller's own annotation
+- `AnnotationBar` in `MessageBubble.tsx` — thumbs up/down, 5-star rating, inline note, rendered below each assistant message; updates via local component fetch with no page reload
+
+### Migrations
+- `20260622_phase4_message_annotations` — adds `MessageAnnotation` table
+
 ## Phase 3 — Role-Based Access Control (2026-06-22)
 
 ### Added
