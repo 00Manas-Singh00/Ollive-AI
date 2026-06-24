@@ -1,5 +1,16 @@
 # Changelog
 
+## Phase 7 — Conversation Replay & Time-Travel (2026-06-24)
+
+### Added
+- `replayMeta Json?` added to `Conversation`; migration `20260624181258_20260624_phase7_replay_meta`
+- `POST /api/conversations/:id/replay` — forks the conversation, then replays each original user turn sequentially against a new conversation, regenerating assistant responses (full moderation + `SafetyAuditLog` + `PromptDecision` pipeline reused per turn). Body (Zod-validated): `providerOverride?` (one of `ProviderName`), `promptVersionOverride?`. Stores `{ forkedFrom, forkedFromTitle, providerOverride, promptVersionOverride, startedAt }` on the new conversation's `replayMeta`
+- `ProviderName`/`PROVIDER_NAMES` exported from `src/lib/llm.ts`; `getProviderPlan()` and `callLLMWithLogging()` accept an optional `providerOverride` to pin a single provider for a call (used by replay) instead of falling back through the routing policy
+- "Replay" option in the conversation context menu (`ConversationSidebar.tsx`); active conversation header shows a "Forked from [original]" badge when `replayMeta` is set
+
+### Migrations
+- `20260624181258_20260624_phase7_replay_meta` — adds nullable `replayMeta` Json column to `Conversation`
+
 ## Phase 6 — Quality Scoring & Dataset Export (2026-06-24)
 
 ### Added

@@ -4,7 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
 
 type LLMMessage = { role: string; content: string };
-type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama";
+export type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama";
+export const PROVIDER_NAMES: ProviderName[] = ["gemini", "grok", "openai", "anthropic", "ollama"];
 type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
 
 type ProviderResponse = {
@@ -79,9 +80,13 @@ function providerOrder(policy: RoutingPolicy): ProviderName[] {
   return [manual, ...all.filter((p) => p !== manual)];
 }
 
-function getProviderPlan(): ProviderName[] {
-  const policy = ((process.env.LLM_ROUTING_POLICY || "manual").toLowerCase() as RoutingPolicy);
+function getProviderPlan(providerOverride?: ProviderName): ProviderName[] {
   const configured = new Set(configuredProviders());
+  if (providerOverride) {
+    if (!configured.has(providerOverride)) throw new Error(`Provider ${providerOverride} is not configured`);
+    return [providerOverride];
+  }
+  const policy = ((process.env.LLM_ROUTING_POLICY || "manual").toLowerCase() as RoutingPolicy);
   const order = providerOrder(policy).filter((p) => configured.has(p));
   if (order.length === 0) {
     throw new Error("No configured provider found. Set GEMINI_API_KEY and/or GROK_API_KEY.");
@@ -112,8 +117,9 @@ async function executeWithFailover(params: {
   messages: LLMMessage[];
   onToken?: (token: string) => void;
   isAborted?: () => boolean;
+  providerOverride?: ProviderName;
 }): Promise<{ provider: ProviderName; model: string; response: ProviderResponse }> {
-  const plan = getProviderPlan();
+  const plan = getProviderPlan(params.providerOverride);
   let lastError: unknown;
 
   for (let i = 0; i < plan.length; i += 1) {
@@ -174,7 +180,8 @@ async function runProvider(params: {
 export async function callLLMWithLogging(params: {
   conversationId: string;
   messages: LLMMessage[];
-}): Promise<{ output: string }> {
+  providerOverride?: ProviderName;
+}): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
 
@@ -183,6 +190,7 @@ export async function callLLMWithLogging(params: {
       mode: "sync",
       conversationId: params.conversationId,
       messages: params.messages,
+      providerOverride: params.providerOverride,
     });
     const responseTs = new Date();
 
@@ -202,7 +210,7 @@ export async function callLLMWithLogging(params: {
       outputPreview: preview(result.response.output),
     });
 
-    return { output: result.response.output };
+    return { output: result.response.output, provider: result.provider, model: result.model };
   } catch (error) {
     const responseTs = new Date();
     void sendLog({

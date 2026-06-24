@@ -217,7 +217,8 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 7 — Conversation Replay & Time-Travel ⬜ NOT STARTED
+### Phase 7 — Conversation Replay & Time-Travel ✅ COMPLETE
+
 
 **Prerequisite Prisma migration:** add `replayMeta Json?` to `Conversation`.
 

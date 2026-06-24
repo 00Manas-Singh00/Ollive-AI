@@ -1,7 +1,8 @@
 "use client";
 
 type Message = { id: string; role: string; content: string };
-type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[] };
+type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
+type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[]; replayMeta?: ReplayMeta | null };
 type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
 type User = { id: string; email: string; name: string; role?: UserRole };
 type ColorTag = { label: string; color: string };
@@ -37,11 +38,12 @@ type Props = {
   onUpdateStatus: (id: string, action: "pause" | "resume") => void;
   onSetTagDrafts: (fn: (prev: Record<string, { label: string; color: string }>) => Record<string, { label: string; color: string }>) => void;
   onShareConversation: (id: string) => void;
+  onReplayConversation: (id: string) => void;
 };
 
 function ConversationCard({
   c, activeId, openMenuId, tagDrafts,
-  onSelect, onMenuToggle, onUpdate, onDelete, onUpdateStatus, onShare, onSetTagDrafts,
+  onSelect, onMenuToggle, onUpdate, onDelete, onUpdateStatus, onShare, onReplay, onSetTagDrafts,
 }: {
   c: Conversation; activeId: string | null; openMenuId: string | null;
   tagDrafts: Record<string, { label: string; color: string }>;
@@ -49,6 +51,7 @@ function ConversationCard({
   onUpdate: (patch: Record<string, unknown>) => void;
   onDelete: () => void; onUpdateStatus: (action: "pause" | "resume") => void;
   onShare: () => void;
+  onReplay: () => void;
   onSetTagDrafts: (fn: (prev: Record<string, { label: string; color: string }>) => Record<string, { label: string; color: string }>) => void;
 }) {
   return (
@@ -63,6 +66,7 @@ function ConversationCard({
               <button className="menu-item" onClick={() => { const t = window.prompt("Rename", c.title); if (t !== null) onUpdate({ title: t }); }}>Rename</button>
               <button className="menu-item" onClick={() => onUpdate({ isArchived: !c.isArchived })}>{c.isArchived ? "Unarchive" : "Archive"}</button>
               <button className="menu-item" onClick={onShare}>Copy share link</button>
+              <button className="menu-item" onClick={onReplay}>Replay</button>
               <button className="menu-item" onClick={() => {
                 const l = (window.prompt("Label", "") || "").trim(); if (!l) return;
                 const cc = tagDrafts[c.id]?.color || TAG_COLORS[0];
@@ -80,6 +84,7 @@ function ConversationCard({
       <div className="thread-meta">
         <span className={`status ${c.status}`}>{c.status}</span>
         {c.isPinned && <span className="status"> pinned</span>}
+        {c.replayMeta && <span className="status" title={c.replayMeta.forkedFromTitle}>forked from {c.replayMeta.forkedFromTitle}</span>}
       </div>
       {!!c.tags.length && (
         <div className="tag-row">
@@ -100,7 +105,7 @@ export default function ConversationSidebar({
   tagDrafts, folderNames,
   onSelectConversation, onSearchChange, onToggleArchived, onSetOpenMenuId,
   onSetOpenNewMenu, onNewConversation, onNewFolder,
-  onUpdateConversation, onDeleteConversation, onUpdateStatus, onSetTagDrafts, onShareConversation,
+  onUpdateConversation, onDeleteConversation, onUpdateStatus, onSetTagDrafts, onShareConversation, onReplayConversation,
 }: Props) {
   const cardProps = (c: Conversation) => ({
     c, activeId, openMenuId, tagDrafts,
@@ -110,6 +115,7 @@ export default function ConversationSidebar({
     onDelete: () => { onDeleteConversation(c.id); onSetOpenMenuId(null); },
     onUpdateStatus: (action: "pause" | "resume") => { onUpdateStatus(c.id, action); onSetOpenMenuId(null); },
     onShare: () => { onShareConversation(c.id); onSetOpenMenuId(null); },
+    onReplay: () => { onReplayConversation(c.id); onSetOpenMenuId(null); },
     onSetTagDrafts,
   });
 
