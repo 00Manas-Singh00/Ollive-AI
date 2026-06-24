@@ -186,7 +186,7 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 5 — Multi-Provider Expansion & RAG ⬜ NOT STARTED
+### Phase 5 — Multi-Provider Expansion & RAG ✅ COMPLETE
 
 **Provider additions to `src/lib/llm.ts`:**
 - `'openai'` — via `openai` npm package.
