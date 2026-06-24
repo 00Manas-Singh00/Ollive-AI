@@ -22,17 +22,22 @@ function chunkText(text: string): string[] {
   return chunks;
 }
 
-// TF-IDF keyword embedding: term frequency vector over top-N terms
-function tfidfVector(text: string, vocabulary: Map<string, number>): number[] {
-  const tokens = tokenize(text);
-  const freq = new Map<string, number>();
-  for (const t of tokens) freq.set(t, (freq.get(t) ?? 0) + 1);
+// Fixed-width term-frequency vector, hashed into HASH_DIM buckets so vectors
+// computed at ingest time and at query time always share the same dimensions
+// (a per-call vocabulary would assign different indices to the same term).
+const HASH_DIM = 512;
 
-  const vec = new Array<number>(vocabulary.size).fill(0);
-  for (const [term, count] of freq) {
-    const idx = vocabulary.get(term);
-    if (idx !== undefined) vec[idx] = count / tokens.length;
-  }
+function hashTerm(term: string): number {
+  let h = 0;
+  for (let i = 0; i < term.length; i++) h = (h * 31 + term.charCodeAt(i)) >>> 0;
+  return h % HASH_DIM;
+}
+
+function tfidfVector(text: string): number[] {
+  const tokens = tokenize(text);
+  const vec = new Array<number>(HASH_DIM).fill(0);
+  if (tokens.length === 0) return vec;
+  for (const t of tokens) vec[hashTerm(t)] += 1 / tokens.length;
   return vec;
 }
 
@@ -73,20 +78,12 @@ export async function ingestDocument(
 
   const chunks = chunkText(content);
 
-  // Build vocabulary from all chunks for TF-IDF
-  const vocab = new Map<string, number>();
-  for (const chunk of chunks) {
-    for (const token of tokenize(chunk)) {
-      if (!vocab.has(token)) vocab.set(token, vocab.size);
-    }
-  }
-
   await prisma.knowledgeChunk.createMany({
     data: chunks.map((text, chunkIndex) => ({
       documentId: doc.id,
       chunkIndex,
       text,
-      embedding: tfidfVector(text, vocab),
+      embedding: tfidfVector(text),
     })),
   });
 
@@ -105,15 +102,7 @@ export async function retrieveRelevantChunks(
 
   if (chunks.length === 0) return [];
 
-  // Rebuild vocabulary from stored chunks
-  const vocab = new Map<string, number>();
-  for (const chunk of chunks) {
-    for (const token of tokenize(chunk.text)) {
-      if (!vocab.has(token)) vocab.set(token, vocab.size);
-    }
-  }
-
-  const queryVec = tfidfVector(query, vocab);
+  const queryVec = tfidfVector(query);
 
   const scored = chunks.map((chunk) => ({
     text: chunk.text,

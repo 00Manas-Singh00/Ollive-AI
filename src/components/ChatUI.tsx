@@ -7,7 +7,8 @@ import MessageList from "@/components/chat/MessageList";
 import ChatInput from "@/components/chat/ChatInput";
 
 type Message = { id: string; role: string; content: string };
-type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[] };
+type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
+type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[]; replayMeta?: ReplayMeta | null };
 type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
 type User = { id: string; email: string; name: string; role?: UserRole };
 
@@ -80,6 +81,15 @@ export default function ChatUI() {
     const r = await fetch(`/api/conversations/${id}/share`, { method: "POST" });
     const d = await r.json();
     if (r.ok && d?.shareUrl) await navigator.clipboard.writeText(`${window.location.origin}${d.shareUrl}`);
+  }
+
+  async function replayConversation(id: string) {
+    setError("");
+    const r = await fetch(`/api/conversations/${id}/replay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    const d = await parseJsonSafe(r);
+    if (!r.ok) return setError(d?.error || `Replay failed (${r.status})`);
+    await refresh();
+    if (d?.conversation?.id) setActiveId(d.conversation.id);
   }
 
   async function send() {
@@ -196,11 +206,17 @@ export default function ChatUI() {
         onUpdateStatus={updateConversationStatus}
         onSetTagDrafts={setTagDrafts}
         onShareConversation={shareConversation}
+        onReplayConversation={replayConversation}
       />
 
       <section className="chat-main">
         <header className="chat-header">
           <h1>{active ? active.title : "Start a new conversation"}</h1>
+          {active?.replayMeta && (
+            <span className="status" style={{ display: "inline-block", marginBottom: 6 }}>
+              Forked from {active.replayMeta.forkedFromTitle}
+            </span>
+          )}
           <p>Ask anything. Conversations are scoped to your workspace.</p>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button

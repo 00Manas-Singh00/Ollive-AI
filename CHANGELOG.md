@@ -1,5 +1,51 @@
 # Changelog
 
+## Phase 7 — Conversation Replay & Time-Travel (2026-06-24)
+
+### Added
+- `replayMeta Json?` added to `Conversation`; migration `20260624181258_20260624_phase7_replay_meta`
+- `POST /api/conversations/:id/replay` — forks the conversation, then replays each original user turn sequentially against a new conversation, regenerating assistant responses (full moderation + `SafetyAuditLog` + `PromptDecision` pipeline reused per turn). Body (Zod-validated): `providerOverride?` (one of `ProviderName`), `promptVersionOverride?`. Stores `{ forkedFrom, forkedFromTitle, providerOverride, promptVersionOverride, startedAt }` on the new conversation's `replayMeta`
+- `ProviderName`/`PROVIDER_NAMES` exported from `src/lib/llm.ts`; `getProviderPlan()` and `callLLMWithLogging()` accept an optional `providerOverride` to pin a single provider for a call (used by replay) instead of falling back through the routing policy
+- "Replay" option in the conversation context menu (`ConversationSidebar.tsx`); active conversation header shows a "Forked from [original]" badge when `replayMeta` is set
+
+### Migrations
+- `20260624181258_20260624_phase7_replay_meta` — adds nullable `replayMeta` Json column to `Conversation`
+
+## Phase 6 — Quality Scoring & Dataset Export (2026-06-24)
+
+### Added
+- `QualityScore` Prisma model (`@unique` on `messageId`); migration `20260624175703_20260624_phase6_quality_score`
+- `quality-score-queue` BullMQ queue (`src/lib/queue.ts` — `getQualityScoreQueue()`)
+- `src/lib/quality-scorer.ts` — heuristic `scoreResponse()`: length, repetition, structure signals minus a refusal-pattern penalty, 0-100
+- `src/workers/quality-score-worker.ts` — consumes `quality-score-queue`, upserts `QualityScore` per `ChatMessage`
+- `POST /api/chat` enqueues a fire-and-forget scoring job (`enqueueQualityScore`) after each successful (non-moderated) assistant message, sync and streaming paths
+- `GET /api/export/dataset` — streaming JSONL/CSV export of `{prompt, completion, qualityScore, breakdown}` rows via `TransformStream`; cursor-paginated reads from `QualityScore`; query params `format`, `minScore`, `from`, `to`; requires `ANALYST` role or above
+- `quality-score-worker` service in `docker-compose.yml`
+- `worker:quality-score` npm script
+
+### Migrations
+- `20260624175703_20260624_phase6_quality_score` — adds `QualityScore` model with `messageId` unique FK to `ChatMessage`
+
+## Phase 5 — Multi-Provider Expansion & RAG (2026-06-24)
+
+### Added
+- `openai`, `anthropic` providers added to `ProviderName` union in `src/lib/llm.ts`; `ollama` added via Ollama's OpenAI-compatible REST endpoint (`OLLAMA_BASE_URL`)
+- `openai` and `@anthropic-ai/sdk` npm dependencies (justified: official SDKs required to call the OpenAI and Anthropic chat APIs; no viable existing alternative in stack)
+- Provider failover: `executeWithFailover()` tries providers in order (`LLM_ROUTING_POLICY`: `manual`/`cost`/`latency`/`quality`) and retries the next configured provider on retryable errors (429/5xx/timeout/network)
+- `KnowledgeDocument` and `KnowledgeChunk` Prisma models; migration `20260622_phase5_knowledge_base`
+- `src/lib/rag.ts` — `ingestDocument()` chunks uploaded text (~500-token paragraphs) and stores a fixed-width (512-bucket) hashed term-frequency vector per chunk; `retrieveRelevantChunks()` scores chunks for a conversation by cosine similarity against the query vector and returns the top-K texts
+- `resolveSystemPrompt()` now accepts `ragQuery` and appends retrieved chunks to the resolved prompt under a `## Context` section
+- `POST /api/conversations/:id/documents` — uploads a text file (max 2 MB) and ingests it via `ingestDocument()`; `GET` lists documents for a conversation
+- `DELETE /api/documents/:id` — deletes a document owned by the caller (cascades to its chunks)
+- Paperclip button in `ChatInput.tsx` for file upload (`.txt`, `.md`, `.csv`, `.json`)
+- New env vars: `OPENAI_API_KEY`, `OPENAI_MODEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`
+
+### Fixed
+- `retrieveRelevantChunks()` previously rebuilt its TF-IDF vocabulary from scratch on every call, so stored chunk embeddings (indexed by an ingest-time vocabulary) and the query vector (indexed by a query-time vocabulary) had mismatched dimension ordering, making cosine similarity meaningless. Replaced with a fixed-width hashed term-frequency vector so ingest-time and query-time vectors always share the same dimensions.
+
+### Migrations
+- `20260622_phase5_knowledge_base` — adds `KnowledgeDocument` and `KnowledgeChunk` tables
+
 ## Phase 4 — Collaborative Annotation (2026-06-22)
 
 ### Added

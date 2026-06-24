@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 
 let cachedQueue: Queue | null = null;
+let cachedQualityScoreQueue: Queue | null = null;
 
 export function getIngestQueue(): Queue {
   if (cachedQueue) return cachedQueue;
@@ -24,4 +25,25 @@ export function getIngestQueue(): Queue {
   });
 
   return cachedQueue;
+}
+
+export function getQualityScoreQueue(): Queue {
+  if (cachedQualityScoreQueue) return cachedQualityScoreQueue;
+
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedQualityScoreQueue = new Queue("quality-score-queue", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 1000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  });
+
+  return cachedQualityScoreQueue;
 }

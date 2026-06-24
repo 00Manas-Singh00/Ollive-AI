@@ -35,6 +35,7 @@ model Conversation {
   folder     String?
   tags       String[]    @default([])
   shareToken String?     @unique
+  replayMeta Json?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   messages   ChatMessage[]
@@ -116,8 +117,21 @@ model ChatMessage {
 
   conversation  Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   annotations   MessageAnnotation[]
+  qualityScore  QualityScore?
 
   @@index([conversationId, createdAt])
+}
+
+model QualityScore {
+  id         String   @id @default(cuid())
+  messageId  String   @unique
+  message    ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  score      Int
+  breakdown  Json
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([score])
 }
 
 model MessageAnnotation {
