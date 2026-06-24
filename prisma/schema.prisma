@@ -19,10 +19,11 @@ model User {
   id            String               @id @default(cuid())
   email         String               @unique
   name          String
-  role          UserRole             @default(VIEWER)
-  createdAt     DateTime             @default(now())
-  conversations Conversation[]
-  annotations   MessageAnnotation[]
+  role            UserRole             @default(VIEWER)
+  rateLimitExempt Boolean              @default(false)
+  createdAt       DateTime             @default(now())
+  conversations   Conversation[]
+  annotations     MessageAnnotation[]
 }
 
 model Conversation {

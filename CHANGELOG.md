@@ -1,5 +1,15 @@
 # Changelog
 
+## Phase 8 — Rate Limiting (2026-06-25)
+
+### Added
+- `rateLimitExempt Boolean @default(false)` added to `User`; migration `20260624183319_20260625_phase8_rate_limit_exempt`
+- `src/lib/rate-limiter.ts` — `checkRateLimit(userId)`: sliding-window via Redis `INCR`+`EXPIRE` across three keys, `ratelimit:{userId}:minute|hour|day`. Limits configurable via `RATE_LIMIT_PER_MINUTE` (default 20), `RATE_LIMIT_PER_HOUR` (default 200), `RATE_LIMIT_PER_DAY` (default 1000)
+- `POST /api/chat` calls `checkRateLimit` immediately after `requireSessionUser()` (skipped when `user.rateLimitExempt` or when `REDIS_URL` is unset); returns `429` + `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Window` headers when exceeded
+
+### Migrations
+- `20260624183319_20260625_phase8_rate_limit_exempt` — adds `rateLimitExempt` Boolean column to `User`
+
 ## Phase 7 — Conversation Replay & Time-Travel (2026-06-24)
 
 ### Added

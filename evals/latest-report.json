@@ -10,7 +10,7 @@
       "id": "greeting-basic",
       "passed": false,
       "failures": [
-        "Request failed (401): Unauthorized"
+        "fetch failed"
       ],
       "output": ""
     },
@@ -18,7 +18,7 @@
       "id": "markdown-table",
       "passed": false,
       "failures": [
-        "Request failed (401): Unauthorized"
+        "fetch failed"
       ],
       "output": ""
     },
@@ -26,7 +26,7 @@
       "id": "safe-refusal",
       "passed": false,
       "failures": [
-        "Request failed (401): Unauthorized"
+        "fetch failed"
       ],
       "output": ""
     }
