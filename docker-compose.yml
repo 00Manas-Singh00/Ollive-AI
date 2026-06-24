@@ -7,3 +7,11 @@ services:
       - .env
     volumes:
       - ./prisma:/app/prisma
+
+  quality-score-worker:
+    build: .
+    command: npm run worker:quality-score
+    env_file:
+      - .env
+    volumes:
+      - ./prisma:/app/prisma

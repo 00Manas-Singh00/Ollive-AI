@@ -4,11 +4,17 @@ import { callLLMWithLogging, streamLLMWithLogging } from "@/lib/llm";
 import { requireSessionUser } from "@/lib/auth";
 import { moderateInput, moderateOutput, refusalTemplate } from "@/lib/safety";
 import { resolveSystemPrompt } from "@/lib/prompt-manager";
+import { getQualityScoreQueue } from "@/lib/queue";
 
 const CONTEXT_WINDOW = Math.min(64, Math.max(4, Number(process.env.LLM_CONTEXT_WINDOW ?? 8) || 8));
 
 function sampleText(text: string) {
   return text.length <= 300 ? text : `${text.slice(0, 300)}...`;
+}
+
+function enqueueQualityScore(messageId: string) {
+  if (!process.env.REDIS_URL) return;
+  void getQualityScoreQueue().add("score", { messageId });
 }
 
 async function buildConversation(req: NextRequest) {
@@ -118,6 +124,7 @@ export async function POST(req: NextRequest) {
                 data: { conversationId, phase: "output", action: "allowed", categories: [], sample: sampleText(fullOutput) },
               });
               const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: fullOutput } });
+              enqueueQualityScore(assistantMessage.id);
               send(JSON.stringify({ done: true, message: assistantMessage, conversationId }));
             }
           } catch (err) {
@@ -158,6 +165,7 @@ export async function POST(req: NextRequest) {
       data: { conversationId, phase: "output", action: "allowed", categories: [], sample: sampleText(completion.output) },
     });
     const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: completion.output } });
+    enqueueQualityScore(assistantMessage.id);
     return NextResponse.json({ conversationId, message: assistantMessage });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to process chat";

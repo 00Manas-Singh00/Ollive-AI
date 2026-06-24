@@ -14,6 +14,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push",
     "worker:ingest": "dotenv -e .env -- tsx src/workers/ingest-worker.ts",
+    "worker:quality-score": "dotenv -e .env -- tsx src/workers/quality-score-worker.ts",
     "eval:run": "node evals/run.mjs",
     "eval:report": "cat evals/latest-report.json"
   },
