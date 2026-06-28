@@ -39,8 +39,10 @@ export async function ensureDefaultPromptProfile() {
   return profile;
 }
 
-export async function resolveSystemPrompt(params: { conversationId: string; model?: string; versionOverride?: number; ragQuery?: string }) {
-  const profile = await ensureDefaultPromptProfile();
+export async function resolveSystemPrompt(params: { conversationId: string; model?: string; versionOverride?: number; ragQuery?: string; profileKey?: string }) {
+  const profile = params.profileKey
+    ? (await prisma.promptProfile.findUnique({ where: { key: params.profileKey } })) ?? (await ensureDefaultPromptProfile())
+    : await ensureDefaultPromptProfile();
   const activeVersion = params.versionOverride ?? profile.activeVersion ?? 1;
   const version = await prisma.promptVersion.findFirst({ where: { profileId: profile.id, version: activeVersion } });
   if (!version) throw new Error(`Prompt version ${activeVersion} not found for profile ${profile.key}`);

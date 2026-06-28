@@ -1,5 +1,21 @@
 # Changelog
 
+## Phase 9 — Public Embed Widget (2026-06-28)
+
+### Added
+- `EmbedToken` Prisma model — `token` (random, unique), `userId` (owner, attributes conversations), `promptProfileKey`, `allowedOrigins String[]`, `isActive`
+- `src/lib/embed-auth.ts` — `requireEmbedToken(req)` validates `X-Embed-Token` header and, when `allowedOrigins` is non-empty, the request `Origin`; `corsHeaders()` builds the matching CORS response headers
+- `POST /api/embed/chat` — token-authenticated chat endpoint (no session cookie). Runs input/output moderation and `resolveSystemPrompt` (now accepts an optional `profileKey` to support per-token prompt profiles) the same as `/api/chat`'s sync path; supports `OPTIONS` preflight
+- `src/app/admin/embed/page.tsx` + `GET/POST /api/admin/embed-tokens`, `PATCH/DELETE /api/admin/embed-tokens/:id` — admin-only token management UI
+- `src/app/embed/[token]/page.tsx` — minimal standalone chat UI rendered inside the widget iframe
+- `public/embed.js` — vanilla JS snippet; reads `data-token`/`data-base-url`/`data-width`/`data-height` from its own `<script>` tag and injects a fixed-position iframe pointed at `/embed/[token]`
+
+### Changed
+- `resolveSystemPrompt()` accepts an optional `profileKey` param; falls back to the default env-configured profile if the key isn't found
+
+### Migrations
+- `20260628072804_20260628_phase9_embed_token` — adds `EmbedToken` table
+
 ## Phase 8 — Rate Limiting (2026-06-25)
 
 ### Added
