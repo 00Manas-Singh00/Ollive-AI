@@ -258,6 +258,98 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
+### Phase 10 — Multi-Model Debate / Race Mode ✅ COMPLETE
+
+Fans a single user prompt out to 2–3 providers concurrently and renders all responses side-by-side; the user picks a winner.
+
+**New Prisma model:** `RaceResult` (`messageId` FK to `ChatMessage`, `provider`, `model`, `content`, `latencyMs`, `tokenCount`, `votedBest Boolean @default(false)`). Migration: `20260628091323_20260628_phase10_race_results`.
+
+**New route:** `POST /api/chat/race` — `requireSessionUser()` first; Zod-validated `{ conversationId?, content, providers: ProviderName[] }` (2–3 providers); auto-creates a conversation when `conversationId` is omitted (mirrors `/api/chat`); runs input moderation + persists the user message + `resolveSystemPrompt()` once, then fans the shared context out via `Promise.allSettled` calling `runProvider` directly per provider. Output moderation runs per provider (refusal template swapped in + `SafetyAuditLog` row on block); one `RaceResult` row persisted per successful provider; fire-and-forget log dispatch per provider (success or error) via `sendLog`. Providers that error are reported in an `errors[]` array rather than failing the whole request.
+
+**New route:** `POST /api/chat/race/:messageId/vote` — sets `votedBest` on the chosen `RaceResult`, clears it on siblings, in a single transaction.
+
+**UI:** "Race mode" toggle + inline provider chip picker in `ChatInput.tsx`; `RacePane.tsx` renders each provider's result as a card (provider, model, latency, tokens) below the triggering message via `MessageList.tsx`, with a "Vote best" button and gold-bordered winner state. `GET /api/conversations` includes `raceResults` per message so race history survives a reload.
+
+**Note:** this is non-streaming by design (the technical spec calls for `Promise.allSettled`, which blocks until every provider responds) — race results appear once all providers finish rather than token-by-token.
+
+---
+
+### Phase 11 — Click-to-Trace Citations ⬜ NOT STARTED
+
+Lets a user click any sentence in an assistant response and see the exact RAG chunk(s) that justified it, instead of citations being implicit.
+
+**Prerequisite Prisma migration:** add `MessageCitation` model (`messageId`, `chunkId` → `KnowledgeChunk`, `relevanceScore Float`, `excerptStart Int`, `excerptEnd Int`). Migration name: `20260628_phase11_message_citations`.
+
+**Library change:** `retrieveRelevantChunks()` in `src/lib/rag.ts` returns chunk ids + scores alongside text; chat route persists a `MessageCitation` row per chunk actually injected into the prompt for that turn.
+
+**New route:** `GET /api/messages/:messageId/citations` — `requireSessionUser()` first; returns citations with chunk source metadata.
+
+**UI:** `MessageBubble.tsx` wraps cited spans in a clickable highlight; click opens a popover showing the source chunk text and originating `KnowledgeDocument` filename.
+
+---
+
+### Phase 12 — Conversation Branching Tree ⬜ NOT STARTED
+
+Extends Phase 7 replay into a visual git-like fork explorer — branch from any message, see sibling branches side-by-side, instead of replay only ever forking the whole conversation.
+
+**Prerequisite Prisma migration:** add `ChatMessage.branchParentId String?` (self-relation) and `Conversation.rootConversationId String?`. Migration name: `20260628_phase12_branching`.
+
+**New route:** `POST /api/conversations/:id/branch` — `requireSessionUser()` first; body `{ fromMessageId }`; clones conversation up to and including `fromMessageId`, sets `branchParentId`/`rootConversationId`, reuses replay's provider/prompt-override plumbing from Phase 7.
+
+**New route:** `GET /api/conversations/:id/tree` — returns the full branch tree (root + all descendants) for sidebar rendering.
+
+**UI:** new `BranchTree.tsx` in `src/components/chat/` — collapsible tree view in `ConversationSidebar.tsx`; "Branch from here" option added next to the existing "Replay" context-menu item in `MessageBubble.tsx`.
+
+---
+
+### Phase 13 — Visible Reasoning Trace ⬜ NOT STARTED
+
+Surfaces step-by-step reasoning as a live, expandable tree while the response streams, instead of only showing final text.
+
+**Prerequisite Prisma migration:** add `ReasoningTrace` model (`messageId` unique, `steps Json`, `provider`). Migration name: `20260628_phase13_reasoning_trace`.
+
+**New lib:** `src/lib/reasoning-trace.ts` — `extractReasoningSteps(provider, rawResponse)`: uses native reasoning/thinking output where the provider exposes it (Anthropic extended thinking, OpenAI reasoning summaries), otherwise parses structured `Thought:`/`Step:` markers from a reasoning-primed system suffix. Zod-validates the parsed step array before persisting.
+
+**Integration:** `streamLLMWithLogging` in `src/lib/llm.ts` emits an additional `data: {"thought": "..."}` SSE event type alongside existing `token` events; `ReasoningTrace` persisted once the full response is assembled (fire-and-forget, same pattern as `InferenceLog`).
+
+**UI:** collapsible "Thinking" panel above the response text in `MessageBubble.tsx`, populated live from `thought` SSE events, collapsed by default once streaming completes.
+
+---
+
+### Phase 14 — Generative UI Widgets ⬜ NOT STARTED
+
+Lets the model render an interactive widget (slider, choice buttons, small chart) inside the chat instead of describing one in prose; the widget's user interaction feeds back into the conversation as a new turn.
+
+**Prerequisite Prisma migration:** add `WidgetInteraction` model (`messageId`, `widgetType`, `schema Json`, `userResponse Json?`). Migration name: `20260628_phase14_widget_interaction`.
+
+**New lib:** `src/lib/generative-ui.ts` — Zod schemas for supported widget types (`slider`, `choice`, `chart`); `parseWidgetDirective(rawResponse)` extracts a fenced ` ```widget ` JSON block from the LLM output and validates it against the matching schema.
+
+**Integration:** chat route detects a widget directive in the assembled response, strips it from the displayed text, persists a `WidgetInteraction` row, and includes the widget payload in the API response.
+
+**UI:** new `WidgetRenderer.tsx` in `src/components/chat/` — renders the typed widget below `MessageBubble.tsx`; on user interaction, posts `userResponse` back to `PATCH /api/messages/:messageId/widget` and auto-sends a synthesized follow-up user turn summarizing the interaction.
+
+---
+
+### Phase 15 — Proactive Ambient Insights ⬜ NOT STARTED
+
+The system notices patterns across a user's conversation history and surfaces a suggestion unprompted, instead of only ever responding to direct questions.
+
+**Prerequisite Prisma migration:** add `ProactiveInsight` model (`userId`, `triggerReason`, `suggestedMessage`, `relatedConversationIds String[]`, `status` enum `PENDING|SENT|DISMISSED`). Migration name: `20260628_phase15_proactive_insights`.
+
+**New BullMQ queue:** `ambient-insight-queue` in `src/lib/queue.ts`, scheduled (BullMQ repeatable job) rather than triggered per-request.
+
+**New worker:** `src/workers/ambient-insight-worker.ts` — periodically scans recent `InferenceLog`/`KnowledgeChunk` history per active user for recurring topics, calls an LLM with a summarization+pattern-detection prompt, writes a `ProactiveInsight` row when confidence exceeds threshold.
+
+**New route:** `GET /api/insights/pending` — `requireSessionUser()` first; returns the current user's `PENDING` insights, marks them `SENT`.
+
+**New route:** `DELETE /api/insights/:id` — dismiss an insight (`status = DISMISSED`).
+
+**UI:** dismissible toast/banner in `ChatUI.tsx`, polled via existing `refresh()` cadence; clicking an insight opens a prefilled chat turn referencing the related conversations.
+
+**New npm script:** `worker:ambient-insight`. **Add to `docker-compose.yml`** as a new service, same pattern as the quality-score worker (Phase 6).
+
+---
+
 ## Running the App
 
 ```bash

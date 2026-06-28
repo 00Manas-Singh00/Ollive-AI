@@ -2,6 +2,8 @@
 
 import { useRef } from "react";
 
+const RACE_PROVIDER_OPTIONS = ["gemini", "grok", "openai", "anthropic", "ollama"] as const;
+
 type Props = {
   value: string;
   loading: boolean;
@@ -10,9 +12,25 @@ type Props = {
   onChange: (v: string) => void;
   onSend: () => void;
   onFileUploaded?: (documentId: string, filename: string) => void;
+  raceMode?: boolean;
+  raceProviders?: string[];
+  onToggleRaceMode?: () => void;
+  onToggleRaceProvider?: (provider: string) => void;
 };
 
-export default function ChatInput({ value, loading, disabled, conversationId, onChange, onSend, onFileUploaded }: Props) {
+export default function ChatInput({
+  value,
+  loading,
+  disabled,
+  conversationId,
+  onChange,
+  onSend,
+  onFileUploaded,
+  raceMode = false,
+  raceProviders = [],
+  onToggleRaceMode,
+  onToggleRaceProvider,
+}: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -35,6 +53,31 @@ export default function ChatInput({ value, loading, disabled, conversationId, on
 
   return (
     <div className="composer-wrap">
+      {onToggleRaceMode && (
+        <div className="race-toolbar">
+          <button
+            className={`mini-btn${raceMode ? " active" : ""}`}
+            onClick={onToggleRaceMode}
+            title="Fan this prompt out to multiple providers side-by-side"
+          >
+            🏁 Race mode
+          </button>
+          {raceMode && (
+            <div className="race-provider-picker">
+              {RACE_PROVIDER_OPTIONS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  className={`race-chip${raceProviders.includes(p) ? " selected" : ""}`}
+                  onClick={() => onToggleRaceProvider?.(p)}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="composer">
         <button
           className="mini-btn"
@@ -53,7 +96,7 @@ export default function ChatInput({ value, loading, disabled, conversationId, on
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) onSend(); }}
         />
         <button className="send-btn" onClick={onSend} disabled={disabled}>
-          {loading ? "Streaming…" : "Send"}
+          {loading ? "Streaming…" : raceMode ? "Race" : "Send"}
         </button>
       </div>
     </div>
