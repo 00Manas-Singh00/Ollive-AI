@@ -37,6 +37,9 @@
 | `NEXT_PUBLIC_BASE_URL` | Base URL for internal sendLog HTTP call |
 | `LLM_CONTEXT_WINDOW` | Messages included in LLM context (default: 8, clamped 4–64) |
 | `SAFETY_REFUSAL_TEMPLATE` | Override default safety refusal message |
+| `RATE_LIMIT_PER_MINUTE` | Per-user chat requests/minute (default: 20) |
+| `RATE_LIMIT_PER_HOUR` | Per-user chat requests/hour (default: 200) |
+| `RATE_LIMIT_PER_DAY` | Per-user chat requests/day (default: 1000) |
 
 ## Failure Handling Assumptions
 - Chat inference remains primary path; logging is non-blocking best effort.

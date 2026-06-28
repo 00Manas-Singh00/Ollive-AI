@@ -5,6 +5,7 @@ import { requireSessionUser } from "@/lib/auth";
 import { moderateInput, moderateOutput, refusalTemplate } from "@/lib/safety";
 import { resolveSystemPrompt } from "@/lib/prompt-manager";
 import { getQualityScoreQueue } from "@/lib/queue";
+import { checkRateLimit } from "@/lib/rate-limiter";
 
 const CONTEXT_WINDOW = Math.min(64, Math.max(4, Number(process.env.LLM_CONTEXT_WINDOW ?? 8) || 8));
 
@@ -19,6 +20,21 @@ function enqueueQualityScore(messageId: string) {
 
 async function buildConversation(req: NextRequest) {
   const user = await requireSessionUser();
+
+  if (process.env.REDIS_URL && !user.rateLimitExempt) {
+    const rateLimit = await checkRateLimit(user.id);
+    if (rateLimit.limited) {
+      throw Object.assign(new Error("Rate limit exceeded"), {
+        status: 429,
+        rateLimitHeaders: {
+          "X-RateLimit-Limit": String(rateLimit.limit),
+          "X-RateLimit-Remaining": String(rateLimit.remaining),
+          "X-RateLimit-Window": `${rateLimit.windowSeconds}s`,
+        },
+      });
+    }
+  }
+
   const provider = (process.env.LLM_PROVIDER || "gemini").toLowerCase();
   if (provider === "gemini" && !process.env.GEMINI_API_KEY)
     throw Object.assign(new Error("GEMINI_API_KEY is not configured"), { status: 500 });
@@ -170,6 +186,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to process chat";
     if (message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const rateLimitHeaders = (error as { rateLimitHeaders?: Record<string, string> }).rateLimitHeaders;
+    if (rateLimitHeaders)
+      return NextResponse.json({ error: message }, { status: 429, headers: rateLimitHeaders });
     const lower = message.toLowerCase();
     if (lower.includes("incorrect api key") || lower.includes("invalid api key") || lower.includes("unauthorized"))
       return NextResponse.json({ error: `Provider auth error: ${message}` }, { status: 401 });

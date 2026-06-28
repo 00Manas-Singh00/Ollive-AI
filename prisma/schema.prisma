@@ -19,10 +19,27 @@ model User {
   id            String               @id @default(cuid())
   email         String               @unique
   name          String
-  role          UserRole             @default(VIEWER)
-  createdAt     DateTime             @default(now())
-  conversations Conversation[]
-  annotations   MessageAnnotation[]
+  role            UserRole             @default(VIEWER)
+  rateLimitExempt Boolean              @default(false)
+  createdAt       DateTime             @default(now())
+  conversations   Conversation[]
+  annotations     MessageAnnotation[]
+  embedTokens     EmbedToken[]
+}
+
+model EmbedToken {
+  id               String   @id @default(cuid())
+  token            String   @unique
+  userId           String
+  name             String?
+  promptProfileKey String?
+  allowedOrigins   String[] @default([])
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Conversation {

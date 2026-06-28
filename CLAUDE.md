@@ -242,15 +242,19 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 9 — Public Embed Widget ⬜ NOT STARTED
+### Phase 9 — Public Embed Widget ✅ COMPLETE
 
-**New Prisma model:** `EmbedToken` (CORS allowedOrigins, promptProfileKey, isActive).
+**Prisma model:** `EmbedToken` (`token`, `userId` owner, `promptProfileKey`, `allowedOrigins String[]`, `isActive`).
 
-**New route:** `POST /api/embed/chat` — auth via `X-Embed-Token` header, no session cookie.
+**New route:** `POST /api/embed/chat` — auth via `X-Embed-Token` header (`src/lib/embed-auth.ts`), no session cookie. CORS enforced against `allowedOrigins` when non-empty; `OPTIONS` preflight handled.
 
-**New pages:** `src/app/admin/embed/page.tsx`, `src/app/embed/[token]/page.tsx`.
+**Admin routes:** `GET/POST /api/admin/embed-tokens`, `PATCH/DELETE /api/admin/embed-tokens/:id` (ADMIN role).
 
-**New file:** `public/embed.js` — vanilla JS iframe injector.
+**Pages:** `src/app/admin/embed/page.tsx` (token management), `src/app/embed/[token]/page.tsx` (standalone widget chat UI).
+
+**New file:** `public/embed.js` — vanilla JS iframe injector, reads `data-token`/`data-base-url`/`data-width`/`data-height`.
+
+**Note:** `resolveSystemPrompt()` in `src/lib/prompt-manager.ts` gained an optional `profileKey` param to support per-embed-token prompt profiles.
 
 ---
 
