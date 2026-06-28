@@ -1,5 +1,24 @@
 # Changelog
 
+## Fixes — Response truncation & broken streaming (2026-06-28)
+
+### Fixed
+- LLM responses were capped at a hardcoded `max_tokens`/`maxOutputTokens: 900` across every provider, truncating long answers mid-sentence. Replaced with `LLM_MAX_OUTPUT_TOKENS` (default 2048, clamped 256–8192) applied to all providers (Gemini, Grok, OpenAI, Anthropic, Ollama) — and inherited by Race mode via `runProvider`.
+- Live streaming on the default Gemini 2.5 models appeared broken — the answer arrived as a single post-"thinking" burst instead of token-by-token. Gemini 2.5 is a thinking model whose hidden reasoning both consumed the (already low) output budget and emitted nothing until complete. Added `thinkingConfig.thinkingBudget`, defaulting to `0` (disabled) via `GEMINI_THINKING_BUDGET`, so the full budget goes to the visible answer and tokens stream as generated. Verified: a short prompt now streams in multiple incremental chunks ending in a clean `done`/`[DONE]`.
+
+## Phase 10 — Multi-Model Debate / Race Mode (2026-06-28)
+
+### Added
+- `RaceResult` Prisma model (`messageId` FK to `ChatMessage`, `provider`, `model`, `content`, `latencyMs`, `tokenCount`, `votedBest`); migration `20260628091323_20260628_phase10_race_results`
+- `POST /api/chat/race` — `requireSessionUser()` first; Zod-validated `{ conversationId?, content, providers: ProviderName[] }` (2-3 providers); auto-creates a conversation when `conversationId` is omitted (same as `/api/chat`); runs the same input-moderation → persist user message → `resolveSystemPrompt()` pipeline once, then fans the resulting context out to all selected providers via `Promise.allSettled` calling `runProvider` directly; moderates each provider's output independently (writes a `SafetyAuditLog` row per provider, swaps in the refusal template if blocked); persists one `RaceResult` row per successful provider and fire-and-forgets a log per provider (success or error)
+- `POST /api/chat/race/:messageId/vote` — sets `votedBest` on the chosen `RaceResult` for that message and clears it on siblings (single transaction)
+- `runProvider`, `providerModel`, `configuredProviders`, `sendLog`, `preview` exported from `src/lib/llm.ts` for reuse by the race route
+- "Race mode" toggle in `ChatInput.tsx` with an inline provider chip picker (2-3 of `gemini`/`grok`/`openai`/`anthropic`/`ollama`); `RacePane.tsx` renders each provider's `RaceResult` as a card (provider, model, latency, token count) side-by-side below the triggering user message, with a "Vote best" button per card and a gold border on the voted winner
+- `GET /api/conversations` now includes `raceResults` on each `ChatMessage` so the sidebar/message list can render race history on reload
+
+### Migrations
+- `20260628091323_20260628_phase10_race_results` — adds `RaceResult` table
+
 ## Phase 9 — Public Embed Widget (2026-06-28)
 
 ### Added

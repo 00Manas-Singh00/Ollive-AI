@@ -135,8 +135,25 @@ model ChatMessage {
   conversation  Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   annotations   MessageAnnotation[]
   qualityScore  QualityScore?
+  raceResults   RaceResult[]
 
   @@index([conversationId, createdAt])
+}
+
+model RaceResult {
+  id         String   @id @default(cuid())
+  messageId  String
+  provider   String
+  model      String
+  content    String
+  latencyMs  Int
+  tokenCount Int?
+  votedBest  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
 }
 
 model QualityScore {

@@ -27,7 +27,12 @@ export async function GET(req: Request) {
           : {}),
       },
       orderBy: [{ isPinned: "desc" }, { updatedAt: "desc" }],
-      include: { messages: { orderBy: { createdAt: "asc" } } },
+      include: {
+        messages: {
+          orderBy: { createdAt: "asc" },
+          include: { raceResults: { orderBy: { createdAt: "asc" } } },
+        },
+      },
     });
     return NextResponse.json({ conversations });
   } catch (error) {

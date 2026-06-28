@@ -36,6 +36,8 @@
 | `PROMPT_PROFILE_KEY` | Active prompt profile key (default: `chat-default`) |
 | `NEXT_PUBLIC_BASE_URL` | Base URL for internal sendLog HTTP call |
 | `LLM_CONTEXT_WINDOW` | Messages included in LLM context (default: 8, clamped 4–64) |
+| `LLM_MAX_OUTPUT_TOKENS` | Max tokens a model may emit per response (default: 2048, clamped 256–8192). Replaces the old hardcoded 900 that truncated long answers |
+| `GEMINI_THINKING_BUDGET` | Gemini 2.5 thinking-token budget (default: 0 = disabled). Thinking tokens otherwise consume the output budget and break incremental streaming; raise only if you want visible reasoning |
 | `SAFETY_REFUSAL_TEMPLATE` | Override default safety refusal message |
 | `RATE_LIMIT_PER_MINUTE` | Per-user chat requests/minute (default: 20) |
 | `RATE_LIMIT_PER_HOUR` | Per-user chat requests/hour (default: 200) |

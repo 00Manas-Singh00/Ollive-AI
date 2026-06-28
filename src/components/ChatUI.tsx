@@ -6,7 +6,8 @@ import ConversationSidebar from "@/components/chat/ConversationSidebar";
 import MessageList from "@/components/chat/MessageList";
 import ChatInput from "@/components/chat/ChatInput";
 
-type Message = { id: string; role: string; content: string };
+type RaceResult = { id: string; provider: string; model: string; content: string; latencyMs: number; tokenCount: number | null; votedBest: boolean };
+type Message = { id: string; role: string; content: string; raceResults?: RaceResult[] };
 type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[]; replayMeta?: ReplayMeta | null };
 type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
@@ -34,6 +35,8 @@ export default function ChatUI() {
   const [user, setUser] = useState<User | null>(null);
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
+  const [raceMode, setRaceMode] = useState(false);
+  const [raceProviders, setRaceProviders] = useState<string[]>(["gemini", "grok"]);
 
   async function refresh() {
     const params = new URLSearchParams();
@@ -150,6 +153,48 @@ export default function ChatUI() {
     setLoading(false);
   }
 
+  async function sendRace() {
+    const text = input.trim();
+    if (!text || loading || active?.status === "paused" || active?.isArchived) return;
+    if (raceProviders.length < 2) return setError("Select at least 2 providers for race mode");
+    setLoading(true);
+    setInput("");
+    setError("");
+
+    try {
+      const res = await fetch("/api/chat/race", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...(activeId ? { conversationId: activeId } : {}), content: text, providers: raceProviders }),
+      });
+      const data = await parseJsonSafe(res);
+      if (!res.ok) setError(data?.error || `Race failed (${res.status})`);
+      if (data?.conversationId) setActiveId(data.conversationId);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Race failed");
+    }
+
+    setLoading(false);
+  }
+
+  function toggleRaceProvider(provider: string) {
+    setRaceProviders((prev) => {
+      if (prev.includes(provider)) return prev.filter((p) => p !== provider);
+      if (prev.length >= 3) return prev;
+      return [...prev, provider];
+    });
+  }
+
+  async function voteRace(messageId: string, raceResultId: string) {
+    const res = await fetch(`/api/chat/race/${messageId}/vote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raceResultId }),
+    });
+    if (res.ok) await refresh();
+  }
+
   async function signIn() {
     const res = await fetch("/api/auth/signin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: authName, email: authEmail }) });
     const data = await parseJsonSafe(res);
@@ -245,7 +290,7 @@ export default function ChatUI() {
         {error && <p className="error-banner">{error}</p>}
 
         <div className="message-pane">
-          <MessageList messages={displayMessages} />
+          <MessageList messages={displayMessages} onVoteRace={voteRace} />
         </div>
 
         <ChatInput
@@ -254,8 +299,12 @@ export default function ChatUI() {
           disabled={loading || active?.status === "paused" || !!active?.isArchived}
           conversationId={activeId}
           onChange={setInput}
-          onSend={send}
+          onSend={raceMode ? sendRace : send}
           onFileUploaded={() => setError("")}
+          raceMode={raceMode}
+          raceProviders={raceProviders}
+          onToggleRaceMode={() => setRaceMode((v) => !v)}
+          onToggleRaceProvider={toggleRaceProvider}
         />
       </section>
     </main>

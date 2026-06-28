@@ -8,7 +8,7 @@ export type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama"
 export const PROVIDER_NAMES: ProviderName[] = ["gemini", "grok", "openai", "anthropic", "ollama"];
 type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
 
-type ProviderResponse = {
+export type ProviderResponse = {
   output: string;
   promptTokens?: number;
   completionTokens?: number;
@@ -16,6 +16,17 @@ type ProviderResponse = {
   ttftMs?: number;
   streamDurationMs?: number;
 };
+
+// Max tokens the model may emit per response. The previous hardcoded 900 truncated
+// long answers mid-sentence — especially on Gemini 2.5 "thinking" models, where the
+// hidden reasoning phase also draws from this budget. Configurable, clamped [256, 8192].
+const MAX_OUTPUT_TOKENS = Math.min(8192, Math.max(256, Number(process.env.LLM_MAX_OUTPUT_TOKENS ?? 2048) || 2048));
+
+// Gemini 2.5 models think before answering; those thinking tokens count against the
+// output budget and arrive as one post-thinking burst (no incremental streaming).
+// Default 0 disables thinking so the budget goes to the visible answer and tokens
+// stream as they are generated. Set GEMINI_THINKING_BUDGET to a positive value to re-enable.
+const GEMINI_THINKING_BUDGET = Math.max(0, Number(process.env.GEMINI_THINKING_BUDGET ?? 0) || 0);
 
 const geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -30,11 +41,11 @@ function anthropicClient(): Anthropic {
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
 }
 
-function preview(text: string, max = 280): string {
+export function preview(text: string, max = 280): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
 }
 
-async function sendLog(event: LogEvent): Promise<void> {
+export async function sendLog(event: LogEvent): Promise<void> {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
   if (!baseUrl) return;
   const controller = new AbortController();
@@ -53,7 +64,7 @@ async function sendLog(event: LogEvent): Promise<void> {
   }
 }
 
-function providerModel(provider: ProviderName): string {
+export function providerModel(provider: ProviderName): string {
   if (provider === "grok") return process.env.GROK_MODEL || "grok-3-mini";
   if (provider === "openai") return process.env.OPENAI_MODEL || "gpt-4o-mini";
   if (provider === "anthropic") return process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
@@ -61,7 +72,7 @@ function providerModel(provider: ProviderName): string {
   return process.env.GEMINI_MODEL || "gemini-2.5-flash";
 }
 
-function configuredProviders(): ProviderName[] {
+export function configuredProviders(): ProviderName[] {
   const list: ProviderName[] = [];
   if (process.env.GEMINI_API_KEY) list.push("gemini");
   if (process.env.GROK_API_KEY) list.push("grok");
@@ -138,7 +149,7 @@ async function executeWithFailover(params: {
   throw lastError instanceof Error ? lastError : new Error("All providers failed");
 }
 
-async function runProvider(params: {
+export async function runProvider(params: {
   provider: ProviderName;
   model: string;
   mode: "sync" | "stream";
@@ -318,7 +329,7 @@ async function callGemini(params: { model: string; messages: LLMMessage[] }) {
   const response = await geminiClient.models.generateContent({
     model: params.model,
     contents: toGeminiContents(params.messages),
-    config: { temperature: 0.9, maxOutputTokens: 900 },
+    config: { temperature: 0.9, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
   });
 
   return {
@@ -346,7 +357,7 @@ async function streamGemini(params: {
   const stream = await geminiClient.models.generateContentStream({
     model: params.model,
     contents: toGeminiContents(params.messages),
-    config: { temperature: 0.9, maxOutputTokens: 900 },
+    config: { temperature: 0.9, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
   });
 
   for await (const chunk of stream) {
@@ -381,7 +392,7 @@ async function callGrok(params: { model: string; messages: LLMMessage[] }) {
       model: params.model,
       messages: params.messages,
       temperature: 0.9,
-      max_tokens: 900,
+      max_tokens: MAX_OUTPUT_TOKENS,
     }),
     cache: "no-store",
   });
@@ -414,7 +425,7 @@ async function callOpenAI(params: { model: string; messages: LLMMessage[] }): Pr
     model: params.model,
     messages: toOpenAIMessages(params.messages),
     temperature: 0.9,
-    max_tokens: 900,
+    max_tokens: MAX_OUTPUT_TOKENS,
   });
   return {
     output: res.choices[0]?.message?.content || "",
@@ -442,7 +453,7 @@ async function streamOpenAI(params: {
     model: params.model,
     messages: toOpenAIMessages(params.messages),
     temperature: 0.9,
-    max_tokens: 900,
+    max_tokens: MAX_OUTPUT_TOKENS,
     stream: true,
     stream_options: { include_usage: true },
   });
@@ -487,7 +498,7 @@ async function callAnthropic(params: { model: string; messages: LLMMessage[] }):
   const { system, msgs } = toAnthropicMessages(params.messages);
   const res = await client.messages.create({
     model: params.model,
-    max_tokens: 900,
+    max_tokens: MAX_OUTPUT_TOKENS,
     ...(system ? { system } : {}),
     messages: msgs,
   });
@@ -517,7 +528,7 @@ async function streamAnthropic(params: {
 
   const stream = await client.messages.create({
     model: params.model,
-    max_tokens: 900,
+    max_tokens: MAX_OUTPUT_TOKENS,
     ...(system ? { system } : {}),
     messages: msgs,
     stream: true,
@@ -558,7 +569,7 @@ async function callOllama(params: { model: string; messages: LLMMessage[] }): Pr
     model: params.model,
     messages: toOpenAIMessages(params.messages),
     temperature: 0.9,
-    max_tokens: 900,
+    max_tokens: MAX_OUTPUT_TOKENS,
   });
   return {
     output: res.choices[0]?.message?.content || "",
