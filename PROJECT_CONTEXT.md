@@ -3,10 +3,10 @@
 ## 1. Project Overview
 
 - **Project name:** Ollive AI (package: `llm-inference-logging-system`)
-- **Purpose:** LLM-powered chat application with built-in inference logging, safety moderation, prompt version management, and per-user conversation workspace.
-- **Core problem solved:** Wraps multi-provider LLM calls with structured operational telemetry (latency, token usage, TTFT), content moderation, and A/B-testable prompt profiles — in a single deployable Next.js app.
-- **Target users:** Internal teams / developers evaluating LLM outputs and prompt quality.
-- **Current maturity:** MVP
+- **Purpose:** LLM-powered chat application with built-in inference logging, safety moderation, prompt version management, RAG, analytics, and per-user conversation workspace.
+- **Core problem solved:** Wraps multi-provider LLM calls with structured operational telemetry (latency, token usage, TTFT), content moderation, A/B-testable prompt profiles, quality scoring, and admin tooling — in a single deployable Next.js app.
+- **Target users:** Internal teams / developers evaluating LLM outputs and prompt quality; external sites via the public embed widget.
+- **Current maturity:** Feature-complete through Phase 10 (see §15). Phases 11–15 planned.
 
 ---
 
@@ -14,14 +14,15 @@
 
 | Layer | Technology | Purpose |
 |---|---|---|
-| Frontend | React 19, Next.js 15 App Router | UI, routing, SSR for shared pages |
-| Backend | Next.js API Routes (Edge-compatible) | REST endpoints |
+| Frontend | React 19, Next.js 15 App Router | UI, routing, SSR for shared/admin pages |
+| Backend | Next.js API Routes | REST endpoints (sync + SSE streaming) |
 | Database | PostgreSQL + Prisma ORM 6 | Persistent storage for all entities |
-| Queue | BullMQ + Redis (ioredis) | Async inference log ingestion |
-| LLM Providers | Google Gemini (`@google/genai`), Grok (x.ai REST) | Inference |
-| Authentication | Custom cookie session (`ollive_session`) | No OAuth/JWT |
+| Queue | BullMQ + Redis (ioredis) | Async log ingestion + quality scoring |
+| LLM Providers | Gemini (`@google/genai`), Grok (x.ai REST), OpenAI (`openai`), Anthropic (`@anthropic-ai/sdk`), Ollama (OpenAI-compatible REST) | Inference |
+| Authentication | HMAC-signed cookie session (`ollive_session`) + role-based access (RBAC) | No OAuth/JWT |
 | Validation | Zod | API payload schema enforcement |
 | Markdown | react-markdown + remark-gfm + rehype-highlight | Chat message rendering |
+| Charts | recharts | Analytics dashboard |
 | Infrastructure | Docker, Vercel | Container and serverless hosting |
 | Testing | Custom eval runner (`evals/run.mjs`) | Prompt regression testing |
 
@@ -30,22 +31,26 @@
 ## 3. System Architecture
 
 ```
-Browser (ChatUI.tsx)
-  ↓ POST /api/chat
+Browser (ChatUI.tsx + chat/* components)
+  ↓ POST /api/chat  (sync JSON or SSE stream via Accept: text/event-stream)
 Chat API Route
-  ├─ requireSessionUser()        — session cookie auth
+  ├─ requireSessionUser()        — HMAC session cookie auth
+  ├─ checkRateLimit()            — Redis sliding-window (429 + X-RateLimit-* headers)
   ├─ moderateInput()             — regex safety check
-  ├─ resolveSystemPrompt()       — prompt profile + A/B variant
-  ├─ callLLMWithLogging()        — provider execution + failover
+  ├─ resolveSystemPrompt()       — prompt profile + A/B variant + RAG chunk injection
+  ├─ callLLMWithLogging() /
+  │  streamLLMWithLogging()      — provider execution + failover
   │    └─ fire-and-forget → POST /api/ingest
   └─ moderateOutput()            — regex safety check on LLM response
          ↓
-  /api/ingest  →  BullMQ queue (Redis)
+  /api/ingest  →  BullMQ ingest queue (Redis)
          ↓
   ingest-worker.ts  →  InferenceLog written to PostgreSQL
+         ↓ (assistant messages also enqueued)
+  quality-score-queue → quality-score-worker.ts → QualityScore
 ```
 
-Shared read-only pages are SSR (`/shared/[token]/page.tsx`) — no auth required.
+Public surfaces (no session cookie): `/shared/[token]` SSR read-only view, `/embed/[token]` widget page + `POST /api/embed/chat` (auth via `X-Embed-Token` header, CORS enforced against `allowedOrigins`).
 
 ---
 
@@ -56,36 +61,64 @@ Shared read-only pages are SSR (`/shared/[token]/page.tsx`) — no auth required
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── auth/           signin, signout, me
-│   │   │   ├── chat/           core LLM chat endpoint
-│   │   │   ├── conversations/  CRUD + share + pause/resume
-│   │   │   ├── ingest/         log ingestion (queue entry point)
-│   │   │   └── prompts/        active version get/set, rollback
-│   │   ├── shared/[token]/     public read-only conversation view (SSR)
-│   │   ├── globals.css         all app styles (dark theme, CSS vars)
-│   │   ├── layout.tsx          root HTML shell
-│   │   └── page.tsx            mounts <ChatUI />
+│   │   │   ├── auth/                signin, signout, me
+│   │   │   ├── chat/                core chat endpoint (sync + SSE)
+│   │   │   │   └── race/            multi-provider race mode + vote
+│   │   │   ├── conversations/       CRUD + share + cancel + replay + documents
+│   │   │   ├── documents/           knowledge document delete
+│   │   │   ├── messages/[id]/annotations/  per-message annotations
+│   │   │   ├── analytics/           inference, ab-results, safety, cost (admin)
+│   │   │   ├── admin/
+│   │   │   │   ├── prompts/         profiles, versions, activate, rollback
+│   │   │   │   ├── users/           user list + role patch
+│   │   │   │   └── embed-tokens/    embed token CRUD
+│   │   │   ├── embed/chat/          public embed chat (token auth)
+│   │   │   ├── export/dataset/      streaming JSONL/CSV export
+│   │   │   ├── ingest/              log ingestion (queue entry point)
+│   │   │   └── prompts/             active version get/set, rollback
+│   │   ├── analytics/               admin analytics dashboard (recharts)
+│   │   ├── admin/
+│   │   │   ├── prompts/             Prompt Studio (two-pane editor + diff)
+│   │   │   ├── users/               user role management
+│   │   │   └── embed/               embed token management
+│   │   ├── embed/[token]/           standalone widget chat UI
+│   │   ├── shared/[token]/          public read-only conversation view (SSR)
+│   │   ├── globals.css              all app styles (dark theme, CSS vars)
+│   │   ├── layout.tsx
+│   │   └── page.tsx                 mounts <ChatUI />
 │   ├── components/
-│   │   └── ChatUI.tsx          entire frontend: auth, sidebar, chat (single component)
+│   │   ├── ChatUI.tsx               orchestrator (state + handlers only)
+│   │   └── chat/
+│   │       ├── AuthGate.tsx         inline sign-in form
+│   │       ├── ConversationSidebar.tsx
+│   │       ├── MessageList.tsx
+│   │       ├── MessageBubble.tsx    markdown + annotations + replay menu
+│   │       ├── RacePane.tsx         race-mode result cards + voting
+│   │       └── ChatInput.tsx        textarea, file upload, race toggle
 │   ├── lib/
-│   │   ├── auth.ts             cookie session helpers
-│   │   ├── ingest-schema.ts    Zod schema for LogEvent
-│   │   ├── llm.ts              provider abstraction, failover, streaming, logging
-│   │   ├── prisma.ts           shared Prisma client singleton
-│   │   ├── prompt-manager.ts   PromptProfile resolution + A/B selection
-│   │   ├── queue.ts            BullMQ Queue factory (cached singleton)
-│   │   ├── safety.ts           input/output moderation + refusal templates
-│   │   └── types.ts            LogEvent type
+│   │   ├── auth.ts                  HMAC session sign/verify; requireSessionUser()
+│   │   ├── rbac.ts                  requireRole(user, minRole) role gate
+│   │   ├── rate-limiter.ts          Redis sliding-window rate limiting
+│   │   ├── embed-auth.ts            X-Embed-Token validation for embed API
+│   │   ├── llm.ts                   provider abstraction, failover, streaming, logging
+│   │   ├── prompt-manager.ts        PromptProfile resolution + A/B selection + rollback
+│   │   ├── rag.ts                   ingestDocument(), retrieveRelevantChunks()
+│   │   ├── safety.ts                input/output moderation + refusal templates
+│   │   ├── quality-scorer.ts        heuristic quality scoring for assistant messages
+│   │   ├── cost.ts                  static provider+model → $/1k-token lookup
+│   │   ├── diff.ts                  minimal Myers diff for prompt diff viewer
+│   │   ├── queue.ts                 BullMQ queue factories (ingest + quality-score)
+│   │   ├── ingest-schema.ts         Zod schema for LogEvent
+│   │   ├── prisma.ts                shared Prisma client singleton
+│   │   └── types.ts                 shared types (LogEvent, etc.)
 │   └── workers/
-│       └── ingest-worker.ts    BullMQ Worker — writes InferenceLog + DLQ
-├── prisma/
-│   ├── schema.prisma
-│   └── migrations/
-├── evals/
-│   ├── cases.json              eval test cases with golden outputs
-│   ├── run.mjs                 eval runner (hits live /api/chat)
-│   └── latest-report.json      last eval results
+│       ├── ingest-worker.ts         writes InferenceLog + DLQ
+│       └── quality-score-worker.ts  writes QualityScore per assistant message
+├── public/embed.js                  vanilla JS iframe injector for embed widget
+├── prisma/  (schema.prisma + migrations/)
+├── evals/   (cases.json, run.mjs, latest-report.json)
 ├── docs/architecture-notes.md
+├── CHANGELOG.md
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -94,104 +127,110 @@ Shared read-only pages are SSR (`/shared/[token]/page.tsx`) — no auth required
 
 ## 5. Application Flow
 
-**Chat message:**
+**Chat message (streaming):**
 ```
-User types message
-→ ChatUI.send() → POST /api/chat
-→ requireSessionUser() (cookie)
-→ moderateInput() — block or allow
-→ resolveSystemPrompt() — fetch active PromptVersion, select A/B variant, log PromptDecision
-→ callLLMWithLogging() — run provider(s) with failover
-→ moderateOutput() — block or allow
-→ ChatMessage saved to DB
-→ fire-and-forget POST /api/ingest → BullMQ → ingest-worker → InferenceLog
-→ return {conversationId, message}
+User types message → ChatUI.send() → POST /api/chat with Accept: text/event-stream
+→ requireSessionUser() → checkRateLimit() → moderateInput()
+→ resolveSystemPrompt() (active PromptVersion + A/B variant + RAG chunks; logs PromptDecision)
+→ streamLLMWithLogging() emits data: {"token":"..."} chunks, terminated by data: [DONE]
+→ ChatUI appends chunks to streamingContent state; on [DONE] calls refresh()
+→ moderateOutput() on assembled response → ChatMessage saved
+→ fire-and-forget sendLog → /api/ingest → BullMQ → ingest-worker → InferenceLog
+→ assistant message enqueued to quality-score-queue → QualityScore
 ```
 
-**Auth:**
+**Race mode:**
 ```
-User enters name + email → POST /api/auth/signin
-→ upsert User by email → set httpOnly cookie (userId)
-→ all subsequent API calls read cookie via requireSessionUser()
+User toggles race + picks 2–3 providers → POST /api/chat/race
+→ shared moderation + prompt resolution once → Promise.allSettled over runProvider
+→ per-provider output moderation + RaceResult row + fire-and-forget log
+→ RacePane renders side-by-side cards → POST /api/chat/race/:messageId/vote sets votedBest
 ```
 
-**Sharing:**
-```
-User clicks "Copy share link" → POST /api/conversations/:id/share
-→ generates UUID shareToken → stored on Conversation
-→ /shared/:token renders SSR read-only page (no auth)
-```
+**Auth:** name + email → `POST /api/auth/signin` → upsert User → set httpOnly cookie `{userId}.{hmac_sha256_hex}`; all protected routes verify via `requireSessionUser()` (timing-safe compare).
+
+**Sharing:** `POST /api/conversations/:id/share` → UUID `shareToken` → `/shared/:token` SSR read-only page (no auth).
+
+**Embed:** admin creates `EmbedToken` → host page includes `public/embed.js` with `data-token` → iframe loads `/embed/[token]` → widget posts to `/api/embed/chat` with `X-Embed-Token`; CORS enforced against `allowedOrigins`.
+
+**Replay:** `POST /api/conversations/:id/replay` re-runs turns sequentially with provider/prompt overrides into a forked conversation (`replayMeta` records origin; "Forked from" badge shown).
+
+**RAG:** paperclip upload in `ChatInput` → `POST /api/conversations/:id/documents` → `ingestDocument()` chunks + embeds (JSON float arrays) → `retrieveRelevantChunks()` injects relevant chunks inside `resolveSystemPrompt()`.
 
 ---
 
 ## 6. Core Modules
 
 ### LLM Layer (`src/lib/llm.ts`)
-Purpose: Multi-provider LLM execution with failover, streaming, and async telemetry logging.
-Responsibilities: Provider selection via routing policy (`manual`/`cost`/`latency`/`quality`), exponential failover on retryable errors, token usage capture, TTFT measurement, async log dispatch.
-Key exports: `callLLMWithLogging`, `streamLLMWithLogging`
-Rules: Log dispatch is always fire-and-forget; chat path must never block on it.
+Multi-provider execution (gemini, grok, openai, anthropic, ollama) with failover, streaming, and async telemetry. Provider selection via routing policy (`manual`/`cost`/`latency`/`quality`), exponential failover on retryable errors, token usage + TTFT capture. Gemini uses proper `Content[]` message arrays via `toGeminiContents()` (system prompt prepended to first user turn, `assistant` → `model`). Key exports: `callLLMWithLogging`, `streamLLMWithLogging`, `runProvider`. Log dispatch is always fire-and-forget.
+
+### Auth & RBAC (`src/lib/auth.ts`, `src/lib/rbac.ts`)
+HMAC-signed session cookie: `{userId}.{hmac_sha256_hex}` using `SESSION_SECRET` (≥32 chars required); `verifyAndExtract()` uses `timingSafeEqual`. Roles: `VIEWER < ANALYST < PROMPT_EDITOR < ADMIN` (`UserRole` enum); `requireRole(user, minRole)` throws 403.
+
+### Rate Limiter (`src/lib/rate-limiter.ts`)
+Redis `INCR`+`EXPIRE` sliding windows per user (`ratelimit:{userId}:minute|hour|day`). Applied in `POST /api/chat` immediately after auth; returns 429 + `X-RateLimit-*` headers. Users with `rateLimitExempt` bypass.
 
 ### Safety (`src/lib/safety.ts`)
-Purpose: Regex-based content moderation on both input and output.
-Responsibilities: Pattern matching against blocklists, returning `ModerationResult`, generating refusal messages.
-Rules: Moderation runs synchronously before and after LLM call. All block/allow events are written to `SafetyAuditLog`.
+Regex-based moderation on input and output. Runs synchronously before and after the LLM call. All block/allow events (both phases) are written to `SafetyAuditLog`.
 
 ### Prompt Manager (`src/lib/prompt-manager.ts`)
-Purpose: Versioned prompt profiles with deterministic A/B testing.
-Responsibilities: Ensure default profile exists, resolve active version, select A/B variant via SHA-256 hash of `conversationId:profileKey:version`, log `PromptDecision`.
-Rules: Variant assignment is stable per conversation (same conversation always gets same variant).
+Versioned prompt profiles with deterministic A/B testing (SHA-256 of `conversationId:profileKey:version`). Optional `profileKey` param supports per-embed-token profiles. Every resolution writes a `PromptDecision`. Managed via Prompt Studio (`/admin/prompts`) with Myers-diff version comparison.
+
+### RAG (`src/lib/rag.ts`)
+`ingestDocument()` chunks uploaded files into `KnowledgeChunk` rows (embeddings as JSON float arrays; pgvector is the upgrade path). `retrieveRelevantChunks()` is integrated into `resolveSystemPrompt()`.
 
 ### Ingestion Pipeline (`/api/ingest` + `src/workers/ingest-worker.ts`)
-Purpose: Async idempotent inference log storage.
-Responsibilities: Zod validation, SHA-256 idempotency key, BullMQ enqueue, worker writes `InferenceLog`, DLQ on max retries.
-Rules: Worker runs as a separate process (`npm run worker:ingest`). Idempotency enforced via `IngestionEvent` status check.
+Zod validation, SHA-256 idempotency key (`IngestionEvent`), BullMQ enqueue, worker writes `InferenceLog`, DLQ (`IngestionDLQ`) on max retries. Separate process: `npm run worker:ingest`.
 
-### Auth (`src/lib/auth.ts`)
-Purpose: Stateless cookie-based session.
-Rules: No password — email upserts user. Session cookie stores raw `userId` (not a signed token). 30-day expiry, `httpOnly`, `sameSite: lax`.
+### Quality Scoring (`src/lib/quality-scorer.ts` + `src/workers/quality-score-worker.ts`)
+Assistant messages scored async via `quality-score-queue`; one `QualityScore` per message. Exported via `GET /api/export/dataset` (streaming JSONL/CSV using `TransformStream`). Separate process: `npm run worker:quality-score`.
 
-### ChatUI (`src/components/ChatUI.tsx`)
-Purpose: Complete frontend — sidebar, conversation management, chat pane, auth form.
-Rules: Single client component. All state is local React state. No external state manager. Data is always re-fetched from API after mutations.
+### Frontend (`src/components/`)
+`ChatUI.tsx` is the orchestrator; presentational components in `src/components/chat/` receive props only. Local React state only — no state managers or Context. `refresh()` after every mutation.
 
 ---
 
 ## 7. Data Model
 
-| Entity | Purpose | Key Relations |
+| Entity | Purpose | Key Relations / Fields |
 |---|---|---|
-| `User` | Account record | owns many `Conversation` |
-| `Conversation` | Chat thread + metadata | belongs to `User`; has `ChatMessage[]`, `InferenceLog[]`, `SafetyAuditLog[]`, `PromptDecision[]` |
-| `ChatMessage` | Individual turn | belongs to `Conversation`, role: `user`\|`assistant` |
-| `InferenceLog` | LLM call telemetry | belongs to `Conversation`; stores latency, tokens, previews, provider, model, status |
-| `PromptProfile` | Named prompt configuration | has many `PromptVersion`; tracks `activeVersion` |
-| `PromptVersion` | Versioned prompt with A/B variants | `basePrompt`, `variantA`, `variantB`, `abRatioA`, `modelOverrides`, `isRollbackPoint` |
-| `PromptDecision` | Per-conversation prompt resolution record | links `Conversation` → profile/version/variant used |
-| `SafetyAuditLog` | Moderation event per message | phase: `input`\|`output`, action: `blocked`\|`allowed` |
-| `IngestionEvent` | Idempotency tracker for log jobs | status: `processing`\|`processed`\|`failed` |
-| `IngestionDLQ` | Failed jobs after max retries | stores raw payload + failure reason |
+| `User` | Account record | `role UserRole`, `rateLimitExempt`; owns `Conversation[]`, `MessageAnnotation[]`, `EmbedToken[]` |
+| `EmbedToken` | Public widget auth token | `token` unique, `promptProfileKey`, `allowedOrigins[]`, `isActive` |
+| `Conversation` | Chat thread + metadata | `status`, `isArchived`, `isPinned`, `folder`, `tags[]`, `shareToken`, `replayMeta Json?` |
+| `ChatMessage` | Individual turn (`user`\|`assistant`) | has `MessageAnnotation[]`, `QualityScore?`, `RaceResult[]` |
+| `RaceResult` | One provider's answer in race mode | `provider`, `model`, `latencyMs`, `tokenCount`, `votedBest` |
+| `QualityScore` | Async quality score per assistant message | `@unique messageId`, `score`, `breakdown Json` |
+| `MessageAnnotation` | Per-user feedback on a message | `@@unique([messageId, userId])`; `rating`, `thumbs`, `comment` |
+| `InferenceLog` | LLM call telemetry | latency, TTFT, tokens, previews, provider, model, status |
+| `PromptProfile` / `PromptVersion` | Versioned prompts with A/B variants | `basePrompt`, `variantA/B`, `abRatioA`, `modelOverrides`, `isRollbackPoint` |
+| `PromptDecision` | Per-conversation prompt resolution record | profile/version/variant used |
+| `SafetyAuditLog` | Moderation event per message | phase `input`\|`output`, action `blocked`\|`allowed` |
+| `KnowledgeDocument` / `KnowledgeChunk` | RAG source docs and chunks | chunk `embedding Json?` |
+| `IngestionEvent` / `IngestionDLQ` | Idempotency tracker / failed-job store | — |
 
-**Constraints:**
-- `Conversation` has compound index on `(userId, isArchived, isPinned, updatedAt)`
-- `PromptVersion` unique on `(profileId, version)`
-- `shareToken` is unique on `Conversation`
-- Cascade deletes from `User → Conversation → *` and `Conversation → ChatMessage/InferenceLog/etc`
+Cascade deletes from `User → Conversation → *`. `Conversation` compound index on `(userId, isArchived, isPinned, updatedAt)`.
 
 ---
 
 ## 8. API / Communication Layer
 
-- **Style:** REST, JSON, Next.js App Router API routes
-- **Auth method:** `requireSessionUser()` — reads `ollive_session` cookie, throws `"UNAUTHORIZED"`
-- **Error pattern:** `{ error: string }` with appropriate HTTP status; `UNAUTHORIZED` → 401, provider auth failures → 401, rate limits → 429, model errors → 400, infra failures → 502/500
+- **Style:** REST, JSON, Next.js App Router routes; chat supports SSE streaming (`Accept: text/event-stream`).
+- **Auth:** `requireSessionUser()` (HMAC cookie) first in every protected route; admin routes additionally check role via `requireRole`. Embed API uses `X-Embed-Token`.
+- **Errors:** `{ error: string }`; `UNAUTHORIZED` → 401, `FORBIDDEN` → 403, rate limit → 429, model errors → 400, infra → 502/500.
 
 | Group | Endpoints |
 |---|---|
 | Auth | `POST /api/auth/signin`, `POST /api/auth/signout`, `GET /api/auth/me` |
-| Chat | `POST /api/chat` |
-| Conversations | `GET /api/conversations`, `PATCH /api/conversations/:id`, `DELETE /api/conversations/:id` |
-| Conversation actions | `POST /api/conversations/:id/share`, `POST /api/conversations/:id/cancel` |
+| Chat | `POST /api/chat` (sync + SSE), `POST /api/chat/race`, `POST /api/chat/race/:messageId/vote` |
+| Conversations | `GET /api/conversations`, `PATCH/DELETE /api/conversations/:id`, `POST .../share`, `POST .../cancel`, `POST .../replay` |
+| Documents (RAG) | `POST/GET /api/conversations/:id/documents`, `DELETE /api/documents/:id` |
+| Annotations | `POST/GET/DELETE /api/messages/:messageId/annotations` |
+| Analytics (admin) | `GET /api/analytics/inference`, `/ab-results`, `/safety`, `/cost` |
+| Prompt admin | `GET/POST /api/admin/prompts`, `GET/POST .../:profileKey/versions`, `POST .../activate`, `POST .../rollback` |
+| User admin | `GET /api/admin/users`, `PATCH /api/admin/users/:id` |
+| Embed admin | `GET/POST /api/admin/embed-tokens`, `PATCH/DELETE /api/admin/embed-tokens/:id` |
+| Embed (public) | `POST /api/embed/chat` (+ `OPTIONS` preflight) |
+| Export | `GET /api/export/dataset` (streaming JSONL/CSV) |
 | Ingestion | `POST /api/ingest` |
 | Prompts | `GET/POST /api/prompts/active`, `POST /api/prompts/rollback` |
 
@@ -199,57 +238,57 @@ Rules: Single client component. All state is local React state. No external stat
 
 ## 9. Frontend Architecture
 
-- **Component strategy:** Single monolithic client component (`ChatUI.tsx`). No component library.
+- **Component strategy:** `ChatUI.tsx` orchestrator + presentational components in `src/components/chat/` (AuthGate, ConversationSidebar, MessageList, MessageBubble, ChatInput, RacePane). No component library.
 - **State management:** Local `useState` only. No Redux/Zustand/Context.
-- **Data fetching:** `fetch()` directly in event handlers and `useEffect`. `refresh()` re-fetches conversation list after every mutation.
+- **Data fetching:** `fetch()` in handlers/`useEffect`; `refresh()` after every mutation. SSE stream consumed for live token rendering.
 - **UI system:** Custom CSS in `globals.css` with CSS custom properties. Dark theme. No Tailwind.
-- **Routing:** App Router pages: `/` (chat), `/shared/[token]` (read-only SSR).
-- **Markdown:** `react-markdown` + `remark-gfm` + `rehype-highlight` with `github-dark` code theme.
-- **Auth gate:** Renders inline sign-in form when `user === null`.
-- **Tag format:** Color tags serialized as `label::#hexcolor` strings stored in `Conversation.tags[]`.
+- **Pages:** `/` (chat), `/shared/[token]` (SSR read-only), `/embed/[token]` (widget), `/analytics`, `/admin/prompts`, `/admin/users`, `/admin/embed`.
+- **Markdown:** `react-markdown` + `remark-gfm` + `rehype-highlight` (`github-dark`).
+- **Tag format:** Color tags serialized as `label::#hexcolor` in `Conversation.tags[]`.
+- **Sidebar:** "Analytics" link visible only to admins.
 
 ---
 
 ## 10. Backend Architecture
 
-- **Routes:** All in `src/app/api/` — each folder is a route group.
-- **Services/logic:** Contained in `src/lib/` — no separate service layer classes.
-- **Middleware:** None (Next.js middleware not used). Auth is inline per-route via `requireSessionUser()`.
-- **Validation:** Zod only at the ingest boundary (`ingest-schema.ts`). Other routes validate manually.
-- **Background jobs:** `ingest-worker.ts` runs as a standalone process; not part of Next.js server.
-- **Context window:** Chat route fetches last 8 messages (`take: 8`, `orderBy: createdAt desc`) for LLM context.
+- **Routes:** all in `src/app/api/`; business logic in `src/lib/` — no service classes, no Next.js middleware.
+- **Validation:** Zod at ingest, chat/race, and other new boundaries.
+- **Background jobs:** two standalone worker processes (`worker:ingest`, `worker:quality-score`), not part of the Next.js server.
+- **Context window:** `LLM_CONTEXT_WINDOW` env var (default 8, clamped [4, 64]), parsed at module load.
 - **Conversation status:** `active` | `paused` — paused conversations reject new messages with 409.
+- **Race mode:** non-streaming by design (`Promise.allSettled` waits for all providers).
 
 ---
 
 ## 11. Security Model
 
-- **Authentication:** Cookie-based, `httpOnly`, `sameSite: lax`. No password or token signing — cookie stores raw `userId`.
-- **Authorization:** All conversation operations verify `userId` matches before DB mutation. Share links are public (no auth) but read-only.
-- **Content safety:** Regex blocklists on input (malware, weapons, self-harm) and output (dangerous instructions). All decisions audit-logged.
-- **Secrets:** API keys and DB credentials via `.env`. Never committed. `SAFETY_REFUSAL_TEMPLATE` overrides default refusal message.
-- **Idempotency:** Ingest events keyed by SHA-256 of payload; prevents duplicate log writes on retries.
-- **Known gap:** Session cookie stores raw userId without signing — vulnerable to cookie tampering if attacker can set arbitrary cookies.
+- **Authentication:** HMAC-SHA256-signed httpOnly cookie (`{userId}.{hmac}`, `sameSite: lax`, 30-day expiry); `SESSION_SECRET` (≥32 chars) required; timing-safe verification.
+- **Authorization:** RBAC via `UserRole` enum; ownership (`userId`) verified before every conversation mutation. Share links public but read-only. Embed API token-authenticated with origin allowlist CORS.
+- **Rate limiting:** per-user Redis sliding windows on chat; `rateLimitExempt` flag for trusted users.
+- **Content safety:** regex blocklists on input and output; every decision (blocked and allowed, both phases) audit-logged.
+- **Secrets:** API keys / DB credentials via `.env`, never committed.
+- **Idempotency:** ingest events keyed by SHA-256 of payload.
 
 ---
 
 ## 12. Development Rules
 
 **DO:**
-- Keep all business logic in `src/lib/` functions.
-- Use the shared `prisma` singleton from `src/lib/prisma.ts`.
-- Use `requireSessionUser()` at the start of every protected route.
-- Keep ingestion fire-and-forget — never `await sendLog(...)`.
-- Validate external inputs with Zod at system boundaries.
-- Use `void` prefix for intentionally unawaited promises.
+- Keep all business logic in `src/lib/` functions; use the shared `prisma` singleton.
+- Call `requireSessionUser()` as the first statement of every protected route.
+- Keep ingestion fire-and-forget — never `await sendLog(...)`; use `void sendLog(...)`.
+- Validate external inputs with Zod at every system boundary.
+- Call `refresh()` after every frontend mutation.
+- Create a migration for every Prisma model change (`YYYYMMDD_phase{N}_{description}`); never `db push` in production.
+- Run `node evals/run.mjs` after every phase and update `CHANGELOG.md`.
 
 **DO NOT:**
-- Add new state managers or context providers to the frontend — use local state.
-- Add new API dependencies without justification (the dep list is intentionally minimal).
+- Add state managers or Context providers to the frontend — local state only.
+- Add top-level npm dependencies without a justification comment.
 - Block the chat response path on logging or ingestion.
-- Duplicate safety checks — `moderateInput`/`moderateOutput` are the canonical path.
+- Bypass `moderateInput`/`moderateOutput` or skip `SafetyAuditLog` writes.
 - Write prompt content directly into API routes — always go through `resolveSystemPrompt()`.
-- Skip writing to `SafetyAuditLog` when moderation fires.
+- Skip the `PromptDecision` record during prompt resolution.
 
 ---
 
@@ -257,105 +296,119 @@ Rules: Single client component. All state is local React state. No external stat
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Prisma connection string (pooled, port 6543) |
-| `DIRECT_URL` | Prisma direct connection (migrations, port 5432) |
-| `REDIS_URL` | BullMQ/ioredis connection URL |
-| `LLM_PROVIDER` | Default provider: `gemini` or `grok` |
+| `DATABASE_URL` / `DIRECT_URL` | Prisma pooled (6543) / direct (5432) connections |
+| `REDIS_URL` | BullMQ / rate-limiter Redis connection |
+| `SESSION_SECRET` | HMAC session signing key (≥32 chars, required) |
+| `LLM_PROVIDER` | Default provider: `gemini` \| `grok` \| `openai` \| `anthropic` \| `ollama` |
 | `LLM_ROUTING_POLICY` | `manual` \| `cost` \| `latency` \| `quality` |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `GEMINI_MODEL` | Gemini model name (default: `gemini-2.5-flash`) |
-| `GROK_API_KEY` | x.ai Grok API key |
-| `GROK_MODEL` | Grok model name (default: `grok-3-mini`) |
-| `INGEST_MAX_RETRIES` | BullMQ job retry attempts (default: 5) |
-| `INGEST_RETRY_DELAY_MS` | BullMQ initial backoff delay (default: 1000) |
-| `PROMPT_PROFILE_KEY` | Active prompt profile key (default: `chat-default`) |
+| `LLM_CONTEXT_WINDOW` | Messages of context per turn (default 8, clamped 4–64) |
+| `LLM_MAX_OUTPUT_TOKENS` | Output token cap |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` / `GEMINI_THINKING_BUDGET` | Gemini config (default model `gemini-2.5-flash`) |
+| `GROK_API_KEY` / `GROK_MODEL` | Grok config (default `grok-3-mini`) |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI config |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Anthropic config |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | Ollama config |
+| `RATE_LIMIT_PER_MINUTE` / `PER_HOUR` / `PER_DAY` | Rate limits (defaults 20 / 200 / 1000) |
+| `INGEST_MAX_RETRIES` / `INGEST_RETRY_DELAY_MS` | BullMQ retry config (5 / 1000) |
+| `PROMPT_PROFILE_KEY` | Active prompt profile key (default `chat-default`) |
 | `NEXT_PUBLIC_BASE_URL` | Base URL for internal `sendLog` HTTP call |
 | `SAFETY_REFUSAL_TEMPLATE` | Override default safety refusal message |
-| `EVAL_BASE_URL` | Eval runner target URL (default: `http://localhost:3000`) |
+| `EVAL_BASE_URL` | Eval runner target (default `http://localhost:3000`) |
 
 ---
 
 ## 14. Deployment & Infrastructure
 
-- **Hosting:** Vercel (primary) or Docker.
-- **Build:** `vercel-build` script runs `prisma migrate deploy && next build`.
-- **Docker:** `node:20-alpine`, exposes port 3000. `docker-compose.yml` mounts prisma dir and loads `.env`.
-- **Worker:** Must run separately — `npm run worker:ingest` (tsx process, not part of Next.js). Not included in Docker compose.
-- **Database:** External PostgreSQL (Supabase-compatible, requires pooled + direct URLs for Prisma).
-- **Redis:** External Redis instance required for BullMQ queue.
-- **Migrations:** Applied via `prisma migrate deploy` at deploy time.
+- **Hosting:** Vercel (primary) or Docker. `vercel-build` runs `prisma migrate deploy && next build`.
+- **Docker:** `node:20-alpine`, port 3000; `docker-compose.yml` loads `.env`.
+- **Workers:** run as separate tsx processes — `npm run worker:ingest` and `npm run worker:quality-score` (planned as docker-compose services).
+- **Database:** external PostgreSQL (Supabase-compatible; pooled + direct URLs). **Redis:** external instance required.
+- **Migrations:** `prisma migrate deploy` at deploy time.
 
 ---
 
 ## 15. Current State
 
-**Implemented:**
-- Multi-provider LLM (Gemini + Grok) with routing policies and automatic failover
-- Inference logging pipeline (async, idempotent, with DLQ)
-- Input and output content moderation with audit trail
-- Prompt versioning, A/B testing, rollback
-- Per-user conversations with pin, archive, folder, color-tagged labels, search
-- Read-only shareable conversation links
-- Pause/resume conversations
-- Transcript download
-- Eval runner for prompt regression
+**Completed phases (0–10):**
+- **Phase 0** — HMAC session cookies, SSE streaming chat UI, ChatUI decomposition, proper Gemini `Content[]` message format, configurable context window.
+- **Phase 1** — Analytics dashboard (`/analytics`, recharts) + admin APIs for inference, A/B results, safety, and cost.
+- **Phase 2** — Prompt Studio (`/admin/prompts`): profile/version editing, activation, rollback, Myers-diff viewer.
+- **Phase 3** — RBAC: `UserRole` enum (`VIEWER`/`ANALYST`/`PROMPT_EDITOR`/`ADMIN`), `requireRole()`, user management page.
+- **Phase 4** — Collaborative annotations (thumbs, star rating, notes) per assistant message.
+- **Phase 5** — OpenAI/Anthropic/Ollama providers + RAG (document upload, chunking, retrieval into system prompt).
+- **Phase 6** — Async quality scoring (queue + worker) and streaming JSONL/CSV dataset export.
+- **Phase 7** — Conversation replay / time-travel with provider/prompt overrides and fork badges.
+- **Phase 8** — Redis sliding-window rate limiting with per-user exemption.
+- **Phase 9** — Public embed widget: `EmbedToken`, token-authed `/api/embed/chat` with CORS, admin token management, `public/embed.js` injector, standalone widget page.
+- **Phase 10** — Multi-model race mode: fan-out to 2–3 providers, side-by-side results, vote-best (non-streaming by design).
 
-**In Progress / Pending:**
-- Streaming chat responses (infrastructure exists in `streamLLMWithLogging` but UI uses sync path)
-- Analytics/dashboard for `InferenceLog` data
-- Admin interface for prompt profile management
+Also implemented: conversation pin/archive/folder/color-tags/search, share links, pause/resume, transcript download, eval runner.
+
+**Planned (not started):**
+- **Phase 11** — Click-to-trace citations (`MessageCitation`, clickable cited spans → source chunk popover).
+- **Phase 12** — Conversation branching tree (git-like fork explorer extending replay).
+- **Phase 13** — Visible reasoning trace (live `thought` SSE events + `ReasoningTrace` model).
+- **Phase 14** — Generative UI widgets (slider/choice/chart directives rendered in chat).
+- **Phase 15** — Proactive ambient insights (scheduled BullMQ worker surfacing cross-conversation suggestions).
 
 **Known Issues / Technical Debt:**
-- Session cookie stores raw `userId` without HMAC signing.
-- `ChatUI.tsx` is a single 82-line dense file — needs decomposition before further feature work.
-- Ingest worker is excluded from Docker compose — must be started manually in production.
-- LLM context window is hardcoded to 8 messages; not configurable.
-- Gemini and Grok use different message formats; Gemini receives a single concatenated prompt string, not a proper message array.
+- RAG embeddings stored as JSON float arrays; upgrade path is pgvector.
+- Workers are excluded from docker-compose — must be started manually in production.
+- Race mode blocks until all providers respond (no per-provider streaming).
 
 ---
 
 ## 16. Important Decisions
 
 **Decision:** Fire-and-forget log shipping via internal HTTP (`/api/ingest`)
-**Reason:** Keeps chat latency independent of logging; logging failures don't degrade user experience.
-**Impact:** Logs may be lost if the server restarts between the fire and the queue enqueue. DLQ mitigates persistent failures.
+**Reason:** Keeps chat latency independent of logging; logging failures don't degrade UX.
+**Impact:** Logs may be lost if the server restarts before enqueue. DLQ mitigates persistent failures.
 
-**Decision:** BullMQ + Redis for ingestion queue
-**Reason:** Burst tolerance and retry semantics; the ingest path can spike without blocking chat.
-**Impact:** Redis is a hard runtime dependency. Worker must run as a separate process.
+**Decision:** BullMQ + Redis for ingestion and quality-score queues
+**Reason:** Burst tolerance and retry semantics without blocking chat.
+**Impact:** Redis is a hard runtime dependency. Workers run as separate processes.
 
 **Decision:** Deterministic A/B variant selection via SHA-256 hash
-**Reason:** Ensures a conversation always receives the same prompt variant — avoids mid-conversation prompt drift.
-**Impact:** Variant cannot be manually overridden per request; only model-level overrides are supported via `modelOverrides` JSON.
+**Reason:** A conversation always receives the same prompt variant — no mid-conversation drift.
+**Impact:** Variant cannot be manually overridden per request; only model-level overrides via `modelOverrides`.
 
-**Decision:** Single-component frontend (`ChatUI.tsx`)
-**Reason:** Speed of iteration at MVP stage.
-**Impact:** Component is hard to test and extend; decomposition needed before adding complex features.
+**Decision:** HMAC-signed session cookie instead of JWT/OAuth
+**Reason:** Minimal dependency surface; tamper-proof with a single shared secret.
+**Impact:** No token rotation/expiry claims; secret rotation invalidates all sessions.
+
+**Decision:** Race mode uses `Promise.allSettled` (non-streaming)
+**Reason:** Spec calls for complete side-by-side comparison; partial streams complicate voting UX.
+**Impact:** Results appear only after the slowest provider finishes.
+
+**Decision:** Decomposed frontend (orchestrator + presentational chat components)
+**Reason:** The original single-component `ChatUI` was blocking feature work; Phase 0.3 split it structurally with no behaviour change.
+**Impact:** Sub-components are props-only; all state remains in `ChatUI.tsx`.
 
 ---
 
 ## 17. AI Coding Agent Instructions
 
 **Before changing code:**
+- Read `CLAUDE.md` first — it is the authoritative phase spec and invariants list.
 - Read the relevant `src/lib/` module entirely — most logic is in lib, not routes.
 - Check `prisma/schema.prisma` before adding or modifying any DB query.
-- Verify the existing error handling pattern in the target route before adding new error paths.
 
 **When adding features:**
-- New LLM providers go in `src/lib/llm.ts` — add to `ProviderName` union, implement `runProvider` branch.
-- New moderation rules go in `src/lib/safety.ts` pattern arrays only.
-- New conversation metadata fields require a Prisma migration + schema change + PATCH route update.
-- All protected routes must call `requireSessionUser()` as the first statement.
+- New LLM providers: add to `ProviderName` union in `src/lib/llm.ts`, implement in `runProvider`.
+- New moderation rules: pattern arrays in `src/lib/safety.ts` only.
+- New Prisma changes require a migration named `YYYYMMDD_phase{N}_{description}`.
+- All protected routes call `requireSessionUser()` first; admin routes also call `requireRole()`.
 
 **When editing the frontend:**
-- All data mutations must call `refresh()` after completion.
-- Do not introduce external state libraries or component libraries without explicit approval.
-- Color tag format (`label::#hex`) is a serialization convention — do not change without migrating existing data.
+- All mutations call `refresh()` after completion.
+- No external state libraries or component libraries without explicit approval.
+- Color tag format (`label::#hex`) is a serialization convention — do not change without migrating data.
 
 **When refactoring:**
 - Ingestion must remain non-blocking from the chat path.
-- Prompt resolution must always write a `PromptDecision` record — do not skip it.
-- Safety audit logs must be written for both `blocked` and `allowed` outcomes.
+- Prompt resolution must always write a `PromptDecision` record.
+- Safety audit logs must be written for both `blocked` and `allowed` outcomes, input and output phases.
 
 **When uncertain:**
-- Prefer consistency with existing patterns (inline auth, lib functions, direct Prisma calls) over introducing new abstractions.
+- Prefer consistency with existing patterns (inline auth, lib functions, direct Prisma calls) over new abstractions.
+- Run `node evals/run.mjs` before declaring a phase done; update `CHANGELOG.md`.
