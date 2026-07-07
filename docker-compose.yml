@@ -15,3 +15,11 @@ services:
       - .env
     volumes:
       - ./prisma:/app/prisma
+
+  ambient-insight-worker:
+    build: .
+    command: npm run worker:ambient-insight
+    env_file:
+      - .env
+    volumes:
+      - ./prisma:/app/prisma

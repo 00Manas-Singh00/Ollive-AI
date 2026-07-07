@@ -4,6 +4,27 @@ import path from "node:path";
 const BASE_URL = process.env.EVAL_BASE_URL || "http://localhost:3000";
 const CASE_FILE = process.env.EVAL_CASES_FILE || path.join(process.cwd(), "evals/cases.json");
 const REUSE_CONVERSATION = (process.env.EVAL_REUSE_CONVERSATION || "true").toLowerCase() !== "false";
+const EVAL_EMAIL = process.env.EVAL_USER_EMAIL || "eval-runner@ollive.local";
+const EVAL_NAME = process.env.EVAL_USER_NAME || "Eval Runner";
+
+// Every /api/chat route calls requireSessionUser(), so the runner must hold a session
+// cookie. Sign in once (upserts the eval user) and reuse the Set-Cookie value on every request.
+let sessionCookie = "";
+
+async function signIn() {
+  const res = await fetch(`${BASE_URL}/api/auth/signin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: EVAL_EMAIL, name: EVAL_NAME }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(`Sign-in failed (${res.status}): ${payload?.error || "unknown"}`);
+  }
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie) throw new Error("Sign-in succeeded but no session cookie was returned");
+  sessionCookie = setCookie.split(";")[0];
+}
 
 function includesCI(text, needle) {
   return text.toLowerCase().includes(needle.toLowerCase());
@@ -27,7 +48,7 @@ function containsLikelyAbsoluteClaim(text) {
 async function queryModel(prompt, conversationId) {
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Cookie: sessionCookie },
     body: JSON.stringify({ message: prompt, conversationId }),
   });
 
@@ -64,6 +85,7 @@ function evaluate(testCase, output) {
 
 async function main() {
   const cases = JSON.parse(fs.readFileSync(CASE_FILE, "utf-8"));
+  await signIn();
   const results = [];
   let sharedConversationId;
 

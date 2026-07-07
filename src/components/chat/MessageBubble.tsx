@@ -177,21 +177,121 @@ function AnnotationBar({ messageId }: { messageId: string }) {
   );
 }
 
+type Citation = {
+  id: string;
+  chunkId: string;
+  relevanceScore: number;
+  excerptStart: number;
+  excerptEnd: number;
+  chunkText: string;
+  chunkIndex: number;
+  documentId: string;
+  filename: string;
+};
+
+function CitationsBar({ messageId }: { messageId: string }) {
+  const [citations, setCitations] = useState<Citation[]>([]);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/messages/${messageId}/citations`)
+      .then((r) => r.json())
+      .then((data: Citation[]) => {
+        if (Array.isArray(data)) setCitations(data);
+      })
+      .catch(() => {});
+  }, [messageId]);
+
+  if (citations.length === 0) return null;
+
+  const open = citations.find((c) => c.id === openId) ?? null;
+
+  return (
+    <div className="citations-bar">
+      <span className="citations-label">📎 Sources</span>
+      {citations.map((c) => (
+        <button
+          key={c.id}
+          className={`citation-chip${openId === c.id ? " active" : ""}`}
+          onClick={() => setOpenId((id) => (id === c.id ? null : c.id))}
+          title={c.filename}
+        >
+          {c.filename}
+          <span className="citation-score">{Math.round(c.relevanceScore * 100)}%</span>
+        </button>
+      ))}
+
+      {open && (
+        <div className="citation-popover">
+          <div className="citation-popover-head">
+            <span className="citation-popover-file">{open.filename}</span>
+            <span className="citation-popover-meta">chunk #{open.chunkIndex}</span>
+            <button className="citation-popover-close" onClick={() => setOpenId(null)} title="Close">×</button>
+          </div>
+          <p className="citation-popover-text">
+            {open.chunkText.slice(0, open.excerptStart)}
+            <mark className="citation-excerpt">
+              {open.chunkText.slice(open.excerptStart, open.excerptEnd)}
+            </mark>
+            {open.chunkText.slice(open.excerptEnd)}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingPanel({ thoughts, streaming }: { thoughts: string[]; streaming?: boolean }) {
+  const [open, setOpen] = useState(!!streaming);
+
+  // Live-expanded while tokens stream in; collapses once the response is finalised.
+  useEffect(() => {
+    setOpen(!!streaming);
+  }, [streaming]);
+
+  if (thoughts.length === 0) return null;
+
+  return (
+    <div className={`thinking-panel${open ? " open" : ""}`}>
+      <button className="thinking-toggle" onClick={() => setOpen((v) => !v)}>
+        <span className="thinking-icon">{streaming ? "◌" : "🧠"}</span>
+        {streaming ? "Thinking…" : `Thinking (${thoughts.length} step${thoughts.length > 1 ? "s" : ""})`}
+        <span className="thinking-chevron">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <ol className="thinking-steps">
+          {thoughts.map((t, i) => (
+            <li key={i} className="thinking-step">{t}</li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 type Props = {
   messageId: string;
   role: string;
   content: string;
+  thoughts?: string[];
   streaming?: boolean;
   animationDelay?: number;
+  onBranch?: (messageId: string) => void;
 };
 
-export default function MessageBubble({ messageId, role, content, streaming, animationDelay }: Props) {
+export default function MessageBubble({ messageId, role, content, thoughts, streaming, animationDelay, onBranch }: Props) {
   return (
     <div
       className={`bubble-row ${role === "user" ? "user" : "assistant"}`}
       style={animationDelay !== undefined ? { animationDelay: `${animationDelay}ms` } : undefined}
     >
+      {onBranch && !streaming && (
+        <button className="branch-from-btn" onClick={() => onBranch(messageId)} title="Branch a new conversation from here">
+          ⑂ Branch from here
+        </button>
+      )}
       <div className={`bubble${streaming ? " streaming" : ""}`}>
+        {role === "assistant" && thoughts && <ThinkingPanel thoughts={thoughts} streaming={streaming} />}
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeHighlight]}
@@ -210,7 +310,10 @@ export default function MessageBubble({ messageId, role, content, streaming, ani
         {streaming && <span className="cursor-blink">▋</span>}
       </div>
       {role === "assistant" && !streaming && (
-        <AnnotationBar messageId={messageId} />
+        <>
+          <CitationsBar messageId={messageId} />
+          <AnnotationBar messageId={messageId} />
+        </>
       )}
     </div>
   );

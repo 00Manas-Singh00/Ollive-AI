@@ -1,5 +1,7 @@
 "use client";
 
+import BranchTree from "./BranchTree";
+
 type Message = { id: string; role: string; content: string };
 type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[]; replayMeta?: ReplayMeta | null };
@@ -39,6 +41,7 @@ type Props = {
   onSetTagDrafts: (fn: (prev: Record<string, { label: string; color: string }>) => Record<string, { label: string; color: string }>) => void;
   onShareConversation: (id: string) => void;
   onReplayConversation: (id: string) => void;
+  branchRefreshKey?: number;
 };
 
 function ConversationCard({
@@ -106,6 +109,7 @@ export default function ConversationSidebar({
   onSelectConversation, onSearchChange, onToggleArchived, onSetOpenMenuId,
   onSetOpenNewMenu, onNewConversation, onNewFolder,
   onUpdateConversation, onDeleteConversation, onUpdateStatus, onSetTagDrafts, onShareConversation, onReplayConversation,
+  branchRefreshKey,
 }: Props) {
   const cardProps = (c: Conversation) => ({
     c, activeId, openMenuId, tagDrafts,
@@ -141,6 +145,13 @@ export default function ConversationSidebar({
         <input value={search} onChange={(e) => onSearchChange(e.target.value)} placeholder="Search" />
         <button className="mini-btn" onClick={onToggleArchived}>{showArchived ? "Hide archived" : "Show archived"}</button>
       </div>
+
+      <BranchTree
+        conversationId={activeId}
+        activeId={activeId}
+        onSelect={onSelectConversation}
+        refreshKey={branchRefreshKey}
+      />
 
       {(user.role === "ANALYST" || user.role === "PROMPT_EDITOR" || user.role === "ADMIN") && (
         <a

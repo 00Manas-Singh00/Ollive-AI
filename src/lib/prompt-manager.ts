@@ -62,7 +62,7 @@ export async function resolveSystemPrompt(params: { conversationId: string; mode
 
   const ragChunks = await retrieveRelevantChunks(params.ragQuery ?? "", params.conversationId, 3).catch(() => []);
   if (ragChunks.length > 0) {
-    resolvedPrompt += `\n\n## Context\n${ragChunks.join("\n\n---\n\n")}`;
+    resolvedPrompt += `\n\n## Context\n${ragChunks.map((c) => c.text).join("\n\n---\n\n")}`;
   }
 
   await prisma.promptDecision.create({
@@ -76,5 +76,5 @@ export async function resolveSystemPrompt(params: { conversationId: string; mode
     },
   });
 
-  return { profileKey: profile.key, version: version.version, variant, prompt: resolvedPrompt };
+  return { profileKey: profile.key, version: version.version, variant, prompt: resolvedPrompt, ragChunks };
 }

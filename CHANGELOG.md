@@ -1,5 +1,72 @@
 # Changelog
 
+## Phase 15 — Proactive Ambient Insights (2026-07-07)
+
+### Added
+- `ProactiveInsight` Prisma model (`userId` FK to `User`, `triggerReason`, `suggestedMessage`, `relatedConversationIds String[]`, `status` enum `InsightStatus` = `PENDING|SENT|DISMISSED`, indexed `[userId, status, createdAt]`); migration `20260628160000_20260628_phase15_proactive_insights`. `User.insights` back-relation added.
+- `src/lib/ambient-insights.ts` — `findActiveUserIds()` (distinct users with non-archived activity in the lookback window), `generateInsightForUser(userId)` (samples the user's recent conversations, calls `callLLMWithLogging` with a pattern-detection system prompt, Zod-validates the returned JSON, and persists a `PENDING` insight when `confidence` clears `AMBIENT_INSIGHT_CONFIDENCE` — skips users with <2 conversations or an existing PENDING insight). Tunables via env: `AMBIENT_INSIGHT_CONFIDENCE` (0.7), `AMBIENT_INSIGHT_LOOKBACK_HOURS` (168), `AMBIENT_INSIGHT_MAX_CONVERSATIONS` (12).
+- `ambient-insight-queue` BullMQ queue (`getAmbientInsightQueue()` in `src/lib/queue.ts`).
+- `src/workers/ambient-insight-worker.ts` — BullMQ worker driven by a repeatable `scan` job (every `AMBIENT_INSIGHT_INTERVAL_MINUTES`, default 60) that fans out one `user` job per active user; each `user` job runs `generateInsightForUser`. `npm run worker:ambient-insight` script + `ambient-insight-worker` service in `docker-compose.yml`.
+- `GET /api/insights/pending` — `requireSessionUser()` first; returns the user's `PENDING` insights and transitions them to `SENT`.
+- `DELETE /api/insights/:id` — `requireSessionUser()` first; ownership-scoped dismissal (`status = DISMISSED`).
+- Dismissible insight banner in `ChatUI.tsx` polled via the existing `refresh()` cadence (`fetchInsights()`); "Explore" prefills the suggested message into the composer (switching to a related conversation when one is open) and "✕" dismisses. New `.insight-banner` styles in `globals.css`.
+
+### Migrations
+- `20260628160000_20260628_phase15_proactive_insights` — adds `InsightStatus` enum + `ProactiveInsight` table + index + FK
+
+## Phase 14 — Generative UI Widgets (2026-07-07)
+
+### Added
+- `WidgetInteraction` Prisma model (`messageId` unique FK to `ChatMessage`, `widgetType`, `schema Json`, `userResponse Json?`); migration `20260628150000_20260628_phase14_widget_interaction`. `ChatMessage.widgetInteraction` back-relation added.
+- `src/lib/generative-ui.ts` — client-safe (no Prisma) Zod schemas for the three supported widget types (`slider`, `choice`, `chart` with `bar`/`line` variants); `parseWidgetDirective(rawResponse)` extracts the first fenced ` ```widget ` JSON block, validates it, and returns the widget plus the response text with the block stripped (malformed/invalid directives are ignored and the text left intact — a broken directive never breaks the turn); `validateWidgetResponse(widgetType, userResponse)` for the write-back path; `summarizeWidgetResponse()` synthesizes the follow-up user turn; `WIDGET_SUFFIX` teaches the model the directive format.
+- `POST /api/chat` (both streaming and sync paths): `WIDGET_SUFFIX` appended to the resolved system prompt; after output moderation passes, the widget directive is detected in the assembled response, stripped from the persisted/displayed message content, persisted as a `WidgetInteraction` row, and included as `widget` in the API response / `done` SSE event.
+- `PATCH /api/messages/:messageId/widget` — `requireSessionUser()` first; ownership-checked; Zod-validates `{ userResponse }` against the widget's type-specific response schema and stores it on the `WidgetInteraction` row.
+- `GET /api/conversations` includes `widgetInteraction` per message so widgets survive a reload.
+- `WidgetRenderer.tsx` in `src/components/chat/` — renders the typed widget below the assistant `MessageBubble` (via `MessageList.tsx`): slider with live value + Send, choice chips (single-select sends immediately; `multiple` toggles + Send), and a single-hue clickable bar/line mini-chart. On interaction it PATCHes `userResponse`, then `ChatUI.respondToWidget` auto-sends a synthesized follow-up user turn summarizing the interaction (reusing the streaming `sendMessage` path). Answered widgets render disabled with a "✓" summary line.
+
+### Migrations
+- `20260628150000_20260628_phase14_widget_interaction` — adds `WidgetInteraction` table + unique index on `messageId` + FK
+
+## Phase 13 — Visible Reasoning Trace (2026-07-07)
+
+### Added
+- `ReasoningTrace` Prisma model (`messageId` unique FK to `ChatMessage`, `provider`, `steps Json`); migration `20260628140000_20260628_phase13_reasoning_trace`. `ChatMessage.reasoningTrace` back-relation added.
+- `src/lib/reasoning-trace.ts` — `REASONING_SUFFIX` (system-prompt suffix that primes marker-based providers to emit leading `Thought:` lines), `extractReasoningSteps(provider, rawResponse)` (splits a complete response into Zod-validated steps + clean answer), `createThoughtSplitter()` (streaming variant that diverts leading `Thought:`/`Step:` lines to an `onThought` callback so markers never reach the visible token stream), `buildReasoningSteps()` (Zod-validates accumulated thought text into a steps array), and `persistReasoningTrace()` (fire-and-forget DB write, same pattern as `InferenceLog` — never throws into the request path).
+- `onThought?: (thought: string) => void` threaded through `streamLLMWithLogging` → `executeWithFailover` → `runProvider`. Reasoning capture is opt-in: only active in stream mode when `onThought` is provided, so direct `runProvider` callers (race mode, replay, embed) are untouched. `streamLLMWithLogging` now also returns `provider`/`model` so the route can attribute the trace.
+- Native reasoning for Anthropic: `streamAnthropic` requests `thinking: { type: "adaptive", display: "summarized" }` when thoughts are captured and line-buffers `thinking_delta` events so every `onThought` call carries one complete reasoning line. All other providers get `REASONING_SUFFIX` appended to the system message plus marker parsing (`createThoughtSplitter` for token streams — Gemini/OpenAI; `extractReasoningSteps` for whole-output pseudo-streams — Grok/Ollama, whose visible output is replaced with the cleaned answer).
+- `POST /api/chat` (streaming path) emits `data: {"thought": "..."}` SSE events alongside `token` events and persists a `ReasoningTrace` (fire-and-forget) after the assistant message is created on the non-moderated path.
+- `GET /api/conversations` includes `reasoningTrace` per message so traces survive a reload.
+- Collapsible "Thinking" panel above the response text in `MessageBubble.tsx` — populated live from `thought` SSE events while streaming (auto-expanded, last step highlighted), collapsed by default once streaming completes; persisted messages render their stored trace steps behind the same toggle.
+
+### Migrations
+- `20260628140000_20260628_phase13_reasoning_trace` — adds `ReasoningTrace` table + unique index + FK
+
+## Phase 12 — Conversation Branching Tree (2026-07-05)
+
+### Added
+- `Conversation.rootConversationId String?` and `ChatMessage.branchParentId String?` (self-relation `MessageBranch`, `onDelete: NoAction`) with a `ChatMessage_branchParentId_idx`; migration `20260628130000_20260628_phase12_branching`.
+- `POST /api/conversations/:id/branch` — `requireSessionUser()` first; Zod-validated `{ fromMessageId, providerOverride?, promptVersionOverride? }`. Clones the source conversation's messages up to and including `fromMessageId` verbatim into a new conversation, links the cloned branch-point message back to the original via `branchParentId`, sets `rootConversationId` to the tree root, and records fork info in `replayMeta` (`mode: "branch"`, `forkedFrom`, `forkedFromTitle`, `branchPointMessageId`). When the branch point is a user turn it reuses Phase 7's replay plumbing (`resolveSystemPrompt` + `callLLMWithLogging` + output moderation) to regenerate a fresh assistant reply under the optional provider/prompt overrides.
+- `GET /api/conversations/:id/tree` — `requireSessionUser()` first; ownership-checked; resolves the tree root (`rootConversationId ?? id`) and returns `{ rootId, nodes[] }` where each node carries `parentConversationId`/`branchPointMessageId`/`mode` for rendering.
+- `BranchTree.tsx` in `src/components/chat/` — collapsible git-like tree of the active conversation's branch family, rendered in `ConversationSidebar.tsx`; only appears once a conversation has at least one branch. Clicking a node switches the active conversation.
+- "⑂ Branch from here" hover action on every non-streaming `MessageBubble` (threaded through `MessageList` → `ChatUI.branchConversation`); on success it refreshes, activates the new branch, and bumps a `branchRefreshKey` so the sidebar tree refetches.
+
+### Migrations
+- `20260628130000_20260628_phase12_branching` — adds `Conversation.rootConversationId`, `ChatMessage.branchParentId` + index + self-FK
+
+## Phase 11 — Click-to-Trace Citations (2026-06-28)
+
+### Added
+- `MessageCitation` Prisma model (`messageId` FK to `ChatMessage`, `chunkId` FK to `KnowledgeChunk`, `relevanceScore Float`, `excerptStart Int`, `excerptEnd Int`); migration `20260628120000_20260628_phase11_message_citations`. `ChatMessage.citations` and `KnowledgeChunk.citations` back-relations added.
+- `retrieveRelevantChunks()` in `src/lib/rag.ts` now returns `RetrievedChunk[]` (`{ id, text, score, excerptStart, excerptEnd }`) instead of `string[]`; a per-chunk `bestExcerpt()` helper picks the sentence with the highest query-term overlap and returns its char offsets so the UI can highlight the precise justifying excerpt.
+- `persistCitations(messageId, chunks)` in `src/lib/rag.ts` — writes one `MessageCitation` row per injected chunk with positive relevance.
+- `resolveSystemPrompt()` now returns the resolved `ragChunks` alongside the prompt so the chat route can attribute citations to the assistant message.
+- `POST /api/chat` persists `MessageCitation` rows (both sync and streaming paths) after the assistant `ChatMessage` is created, for each chunk actually injected into that turn's prompt.
+- `GET /api/messages/:messageId/citations` — `requireSessionUser()` first; ownership-checked; returns citations with chunk text, excerpt offsets, relevance score, and originating `KnowledgeDocument` filename.
+- Citations UI in `MessageBubble.tsx` — a "📎 Sources" chip row below assistant messages (lazy-fetched, like the annotation bar); clicking a chip opens a popover showing the source chunk text with the justifying excerpt highlighted and the source filename.
+
+### Migrations
+- `20260628120000_20260628_phase11_message_citations` — adds `MessageCitation` table + FKs/indexes
+
 ## Fixes — Response truncation & broken streaming (2026-06-28)
 
 ### Fixed

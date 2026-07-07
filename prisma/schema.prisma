@@ -15,6 +15,12 @@ enum UserRole {
   ADMIN
 }
 
+enum InsightStatus {
+  PENDING
+  SENT
+  DISMISSED
+}
+
 model User {
   id            String               @id @default(cuid())
   email         String               @unique
@@ -25,6 +31,22 @@ model User {
   conversations   Conversation[]
   annotations     MessageAnnotation[]
   embedTokens     EmbedToken[]
+  insights        ProactiveInsight[]
+}
+
+model ProactiveInsight {
+  id                     String        @id @default(cuid())
+  userId                 String
+  triggerReason          String
+  suggestedMessage       String
+  relatedConversationIds String[]      @default([])
+  status                 InsightStatus @default(PENDING)
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
 }
 
 model EmbedToken {
@@ -53,6 +75,7 @@ model Conversation {
   tags       String[]    @default([])
   shareToken String?     @unique
   replayMeta Json?
+  rootConversationId String?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   messages   ChatMessage[]
@@ -130,14 +153,21 @@ model ChatMessage {
   conversationId String
   role           String
   content        String
+  branchParentId String?
   createdAt      DateTime @default(now())
 
   conversation  Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   annotations   MessageAnnotation[]
   qualityScore  QualityScore?
   raceResults   RaceResult[]
+  citations     MessageCitation[]
+  reasoningTrace ReasoningTrace?
+  widgetInteraction WidgetInteraction?
+  branchParent   ChatMessage?  @relation("MessageBranch", fields: [branchParentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branchChildren ChatMessage[] @relation("MessageBranch")
 
   @@index([conversationId, createdAt])
+  @@index([branchParentId])
 }
 
 model RaceResult {
@@ -154,6 +184,28 @@ model RaceResult {
   message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   @@index([messageId])
+}
+
+model ReasoningTrace {
+  id        String   @id @default(cuid())
+  messageId String   @unique
+  provider  String
+  steps     Json
+  createdAt DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model WidgetInteraction {
+  id           String   @id @default(cuid())
+  messageId    String   @unique
+  widgetType   String
+  schema       Json
+  userResponse Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 }
 
 model QualityScore {
@@ -241,8 +293,25 @@ model KnowledgeChunk {
   // embedding stored as JSON float array; upgrade path: migrate to pgvector Float[] with pg_vector extension
   embedding  Json?
   document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  citations  MessageCitation[]
 
   @@index([documentId])
+}
+
+model MessageCitation {
+  id             String   @id @default(cuid())
+  messageId      String
+  chunkId        String
+  relevanceScore Float
+  excerptStart   Int
+  excerptEnd     Int
+  createdAt      DateTime @default(now())
+
+  message ChatMessage    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chunk   KnowledgeChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([chunkId])
 }
 
 model IngestionDLQ {
