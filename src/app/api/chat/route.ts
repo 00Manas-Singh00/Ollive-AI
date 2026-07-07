@@ -4,6 +4,9 @@ import { callLLMWithLogging, streamLLMWithLogging } from "@/lib/llm";
 import { requireSessionUser } from "@/lib/auth";
 import { moderateInput, moderateOutput, refusalTemplate } from "@/lib/safety";
 import { resolveSystemPrompt } from "@/lib/prompt-manager";
+import { persistCitations } from "@/lib/rag";
+import { persistReasoningTrace } from "@/lib/reasoning-trace";
+import { parseWidgetDirective, createWidgetStripper, WIDGET_SUFFIX } from "@/lib/generative-ui";
 import { getQualityScoreQueue } from "@/lib/queue";
 import { checkRateLimit } from "@/lib/rate-limiter";
 
@@ -87,11 +90,11 @@ async function buildConversation(req: NextRequest) {
 
   const promptDecision = await resolveSystemPrompt({ conversationId, model, versionOverride: promptVersionOverride, ragQuery: message });
   const llmMessages = [
-    { role: "system" as const, content: promptDecision.prompt },
+    { role: "system" as const, content: `${promptDecision.prompt}\n\n${WIDGET_SUFFIX}` },
     ...contextMessages.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
   ];
 
-  return { conversationId, llmMessages, blockedMessage: null };
+  return { conversationId, llmMessages, ragChunks: promptDecision.ragChunks, blockedMessage: null };
 }
 
 export async function POST(req: NextRequest) {
@@ -104,7 +107,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ conversationId: ctx.conversationId, message: ctx.blockedMessage, moderated: true });
     }
 
-    const { conversationId, llmMessages } = ctx;
+    const { conversationId, llmMessages, ragChunks } = ctx;
 
     if (isStreaming) {
       let aborted = false;
@@ -116,16 +119,26 @@ export async function POST(req: NextRequest) {
 
           try {
             let fullOutput = "";
+            let thinkingText = "";
 
-            await streamLLMWithLogging({
+            // Keep the raw response in fullOutput for widget parsing, but strip the
+            // ```widget block out of the live token stream so it never renders.
+            const widgetStripper = createWidgetStripper((token) => send(JSON.stringify({ token })));
+
+            const streamResult = await streamLLMWithLogging({
               conversationId,
               messages: llmMessages!,
               onToken: (token) => {
                 fullOutput += token;
-                send(JSON.stringify({ token }));
+                widgetStripper.push(token);
+              },
+              onThought: (thought) => {
+                thinkingText += (thinkingText ? "\n" : "") + thought;
+                send(JSON.stringify({ thought }));
               },
               isAborted: () => aborted,
             });
+            widgetStripper.flush();
 
             const outputModeration = moderateOutput(fullOutput);
             if (outputModeration.blocked) {
@@ -139,9 +152,15 @@ export async function POST(req: NextRequest) {
               await prisma.safetyAuditLog.create({
                 data: { conversationId, phase: "output", action: "allowed", categories: [], sample: sampleText(fullOutput) },
               });
-              const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: fullOutput } });
+              const { widget, text: displayText } = parseWidgetDirective(fullOutput);
+              const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: displayText } });
+              const widgetInteraction = widget
+                ? await prisma.widgetInteraction.create({ data: { messageId: assistantMessage.id, widgetType: widget.type, schema: widget } })
+                : null;
+              await persistCitations(assistantMessage.id, ragChunks ?? []);
               enqueueQualityScore(assistantMessage.id);
-              send(JSON.stringify({ done: true, message: assistantMessage, conversationId }));
+              persistReasoningTrace({ messageId: assistantMessage.id, provider: streamResult.provider, thinkingText });
+              send(JSON.stringify({ done: true, message: assistantMessage, widget: widgetInteraction, conversationId }));
             }
           } catch (err) {
             send(JSON.stringify({ error: err instanceof Error ? err.message : "Stream failed" }));
@@ -180,9 +199,14 @@ export async function POST(req: NextRequest) {
     await prisma.safetyAuditLog.create({
       data: { conversationId, phase: "output", action: "allowed", categories: [], sample: sampleText(completion.output) },
     });
-    const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: completion.output } });
+    const { widget, text: displayText } = parseWidgetDirective(completion.output);
+    const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: displayText } });
+    const widgetInteraction = widget
+      ? await prisma.widgetInteraction.create({ data: { messageId: assistantMessage.id, widgetType: widget.type, schema: widget } })
+      : null;
+    await persistCitations(assistantMessage.id, ragChunks ?? []);
     enqueueQualityScore(assistantMessage.id);
-    return NextResponse.json({ conversationId, message: assistantMessage });
+    return NextResponse.json({ conversationId, message: assistantMessage, widget: widgetInteraction });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to process chat";
     if (message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

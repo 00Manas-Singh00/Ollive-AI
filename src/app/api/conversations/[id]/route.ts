@@ -38,7 +38,15 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
     const { id } = await params;
     const existing = await prisma.conversation.findFirst({ where: { id, userId: user.id } });
     if (!existing) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-    await prisma.conversation.delete({ where: { id } });
+    await prisma.$transaction([
+      // Messages in other conversations may reference this conversation's messages as their
+      // branch point (Phase 12); the self-FK is NoAction, so detach them before deleting.
+      prisma.chatMessage.updateMany({
+        where: { branchParent: { conversationId: id } },
+        data: { branchParentId: null },
+      }),
+      prisma.conversation.delete({ where: { id } }),
+    ]);
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

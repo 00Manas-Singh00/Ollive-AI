@@ -2,6 +2,7 @@ import { Queue } from "bullmq";
 
 let cachedQueue: Queue | null = null;
 let cachedQualityScoreQueue: Queue | null = null;
+let cachedAmbientInsightQueue: Queue | null = null;
 
 export function getIngestQueue(): Queue {
   if (cachedQueue) return cachedQueue;
@@ -46,4 +47,25 @@ export function getQualityScoreQueue(): Queue {
   });
 
   return cachedQualityScoreQueue;
+}
+
+export function getAmbientInsightQueue(): Queue {
+  if (cachedAmbientInsightQueue) return cachedAmbientInsightQueue;
+
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedAmbientInsightQueue = new Queue("ambient-insight-queue", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  });
+
+  return cachedAmbientInsightQueue;
 }

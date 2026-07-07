@@ -6,12 +6,17 @@ import ConversationSidebar from "@/components/chat/ConversationSidebar";
 import MessageList from "@/components/chat/MessageList";
 import ChatInput from "@/components/chat/ChatInput";
 
+import type { WidgetInteractionData } from "@/components/chat/WidgetRenderer";
+import type { WidgetResponse } from "@/lib/generative-ui";
+
 type RaceResult = { id: string; provider: string; model: string; content: string; latencyMs: number; tokenCount: number | null; votedBest: boolean };
-type Message = { id: string; role: string; content: string; raceResults?: RaceResult[] };
+type ReasoningTrace = { steps: { index: number; text: string }[]; provider: string };
+type Message = { id: string; role: string; content: string; raceResults?: RaceResult[]; reasoningTrace?: ReasoningTrace | null; widgetInteraction?: WidgetInteractionData | null };
 type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
 type Conversation = { id: string; title: string; status: string; isArchived: boolean; isPinned: boolean; folder: string | null; tags: string[]; messages: Message[]; replayMeta?: ReplayMeta | null };
 type UserRole = "VIEWER" | "ANALYST" | "PROMPT_EDITOR" | "ADMIN";
 type User = { id: string; email: string; name: string; role?: UserRole };
+type ProactiveInsight = { id: string; triggerReason: string; suggestedMessage: string; relatedConversationIds: string[]; createdAt: string };
 
 async function parseJsonSafe(res: Response) {
   const t = await res.text();
@@ -25,6 +30,7 @@ export default function ChatUI() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const [streamingThoughts, setStreamingThoughts] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -37,6 +43,8 @@ export default function ChatUI() {
   const [authEmail, setAuthEmail] = useState("");
   const [raceMode, setRaceMode] = useState(false);
   const [raceProviders, setRaceProviders] = useState<string[]>(["gemini", "grok"]);
+  const [branchRefreshKey, setBranchRefreshKey] = useState(0);
+  const [insights, setInsights] = useState<ProactiveInsight[]>([]);
 
   async function refresh() {
     const params = new URLSearchParams();
@@ -47,13 +55,36 @@ export default function ChatUI() {
     if (!res.ok) return setError(data?.error || `Failed (${res.status})`);
     setConversations(data?.conversations || []);
     if (!activeId && data?.conversations?.length) setActiveId(data.conversations[0].id);
+    void fetchInsights();
+  }
+
+  async function fetchInsights() {
+    const res = await fetch("/api/insights/pending", { cache: "no-store" });
+    const data = await parseJsonSafe(res);
+    if (res.ok && data?.insights?.length) setInsights((prev) => [...data.insights, ...prev]);
+  }
+
+  async function dismissInsight(id: string) {
+    setInsights((prev) => prev.filter((i) => i.id !== id));
+    await fetch(`/api/insights/${id}`, { method: "DELETE" });
+  }
+
+  function actOnInsight(insight: ProactiveInsight) {
+    const related = insight.relatedConversationIds.find((cid) => conversations.some((c) => c.id === cid));
+    if (related) setActiveId(related);
+    setInput(insight.suggestedMessage);
+    setInsights((prev) => prev.filter((i) => i.id !== insight.id));
+    void fetch(`/api/insights/${insight.id}`, { method: "DELETE" });
   }
 
   useEffect(() => {
-    fetch("/api/auth/me").then((r) => r.json()).then((d) => {
-      setUser(d?.user || null);
-      if (d?.user) refresh();
-    });
+    fetch("/api/auth/me")
+      .then(parseJsonSafe)
+      .then((d) => {
+        setUser(d?.user || null);
+        if (d?.user) refresh();
+      })
+      .catch(() => setUser(null));
   }, []);
 
   useEffect(() => { if (user) refresh(); }, [search, showArchived, user]);
@@ -95,12 +126,33 @@ export default function ChatUI() {
     if (d?.conversation?.id) setActiveId(d.conversation.id);
   }
 
+  async function branchConversation(fromMessageId: string) {
+    if (!activeId) return;
+    setError("");
+    const r = await fetch(`/api/conversations/${activeId}/branch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fromMessageId }),
+    });
+    const d = await parseJsonSafe(r);
+    if (!r.ok) return setError(d?.error || `Branch failed (${r.status})`);
+    await refresh();
+    setBranchRefreshKey((k) => k + 1);
+    if (d?.conversation?.id) setActiveId(d.conversation.id);
+  }
+
   async function send() {
     const text = input.trim();
+    if (!text) return;
+    setInput("");
+    await sendMessage(text);
+  }
+
+  async function sendMessage(text: string) {
     if (!text || loading || active?.status === "paused" || active?.isArchived) return;
     setLoading(true);
-    setInput("");
     setStreamingContent("");
+    setStreamingThoughts([]);
     setError("");
 
     try {
@@ -136,6 +188,7 @@ export default function ChatUI() {
           try {
             const event = JSON.parse(raw);
             if (event.token !== undefined) setStreamingContent((prev) => (prev ?? "") + event.token);
+            if (event.thought !== undefined) setStreamingThoughts((prev) => [...prev, event.thought]);
             if (event.done || event.moderated) {
               if (event.conversationId) setActiveId(event.conversationId);
               setStreamingContent(null);
@@ -186,6 +239,22 @@ export default function ChatUI() {
     });
   }
 
+  async function respondToWidget(messageId: string, userResponse: WidgetResponse, summary: string) {
+    setError("");
+    const res = await fetch(`/api/messages/${messageId}/widget`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userResponse }),
+    });
+    if (!res.ok) {
+      const data = await parseJsonSafe(res);
+      return setError(data?.error || `Widget response failed (${res.status})`);
+    }
+    await refresh();
+    // The interaction feeds back into the conversation as a synthesized user turn.
+    await sendMessage(summary);
+  }
+
   async function voteRace(messageId: string, raceResultId: string) {
     const res = await fetch(`/api/chat/race/${messageId}/vote`, {
       method: "POST",
@@ -219,7 +288,9 @@ export default function ChatUI() {
 
   const displayMessages = [
     ...(active?.messages ?? []),
-    ...(streamingContent !== null ? [{ id: "__streaming__", role: "assistant", content: streamingContent, streaming: true }] : []),
+    ...(streamingContent !== null
+      ? [{ id: "__streaming__", role: "assistant", content: streamingContent, streaming: true, liveThoughts: streamingThoughts.length ? streamingThoughts : undefined }]
+      : []),
   ];
 
   return (
@@ -252,6 +323,7 @@ export default function ChatUI() {
         onSetTagDrafts={setTagDrafts}
         onShareConversation={shareConversation}
         onReplayConversation={replayConversation}
+        branchRefreshKey={branchRefreshKey}
       />
 
       <section className="chat-main">
@@ -287,10 +359,24 @@ export default function ChatUI() {
           </div>
         </header>
 
+        {insights.map((insight) => (
+          <div key={insight.id} className="insight-banner">
+            <div className="insight-banner-body">
+              <span className="insight-banner-label">💡 Suggestion</span>
+              <p className="insight-banner-message">{insight.suggestedMessage}</p>
+              <span className="insight-banner-reason">{insight.triggerReason}</span>
+            </div>
+            <div className="insight-banner-actions">
+              <button className="mini-btn" onClick={() => actOnInsight(insight)}>Explore</button>
+              <button className="mini-btn" onClick={() => dismissInsight(insight.id)} aria-label="Dismiss">✕</button>
+            </div>
+          </div>
+        ))}
+
         {error && <p className="error-banner">{error}</p>}
 
         <div className="message-pane">
-          <MessageList messages={displayMessages} onVoteRace={voteRace} />
+          <MessageList messages={displayMessages} onVoteRace={voteRace} onBranch={branchConversation} onWidgetRespond={respondToWidget} />
         </div>
 
         <ChatInput

@@ -274,9 +274,11 @@ Fans a single user prompt out to 2–3 providers concurrently and renders all re
 
 ---
 
-### Phase 11 — Click-to-Trace Citations ⬜ NOT STARTED
+### Phase 11 — Click-to-Trace Citations ✅ COMPLETE
 
 Lets a user click any sentence in an assistant response and see the exact RAG chunk(s) that justified it, instead of citations being implicit.
+
+**Implemented (2026-06-28):** `MessageCitation` model (migration `20260628120000_20260628_phase11_message_citations`). `retrieveRelevantChunks()` returns `RetrievedChunk[]` (id + score + excerpt offsets); `resolveSystemPrompt()` returns `ragChunks`; `persistCitations()` writes one row per injected chunk after the assistant message is created in both `POST /api/chat` paths. `GET /api/messages/:messageId/citations` (ownership-checked) returns citations + chunk/document metadata. `MessageBubble.tsx` renders a "📎 Sources" chip row with a per-chunk popover that highlights the justifying excerpt.
 
 **Prerequisite Prisma migration:** add `MessageCitation` model (`messageId`, `chunkId` → `KnowledgeChunk`, `relevanceScore Float`, `excerptStart Int`, `excerptEnd Int`). Migration name: `20260628_phase11_message_citations`.
 
@@ -288,9 +290,11 @@ Lets a user click any sentence in an assistant response and see the exact RAG ch
 
 ---
 
-### Phase 12 — Conversation Branching Tree ⬜ NOT STARTED
+### Phase 12 — Conversation Branching Tree ✅ COMPLETE
 
 Extends Phase 7 replay into a visual git-like fork explorer — branch from any message, see sibling branches side-by-side, instead of replay only ever forking the whole conversation.
+
+**Implemented (2026-07-05):** migration `20260628130000_20260628_phase12_branching` adds `Conversation.rootConversationId` and `ChatMessage.branchParentId` (self-relation `MessageBranch`, `onDelete: NoAction`, indexed). `POST /api/conversations/:id/branch` clones messages up to and including `fromMessageId`, links the branch point via `branchParentId`, sets `rootConversationId`, stores fork metadata in `replayMeta` (`mode: "branch"`), and — when branching from a user turn — regenerates the assistant reply via Phase 7's replay plumbing under optional provider/prompt overrides. `GET /api/conversations/:id/tree` returns `{ rootId, nodes[] }` for the whole tree. `BranchTree.tsx` renders a collapsible tree in `ConversationSidebar.tsx` (shown once a conversation has ≥1 branch); a "⑂ Branch from here" hover action on each `MessageBubble` triggers a branch and switches to it.
 
 **Prerequisite Prisma migration:** add `ChatMessage.branchParentId String?` (self-relation) and `Conversation.rootConversationId String?`. Migration name: `20260628_phase12_branching`.
 
@@ -302,9 +306,11 @@ Extends Phase 7 replay into a visual git-like fork explorer — branch from any 
 
 ---
 
-### Phase 13 — Visible Reasoning Trace ⬜ NOT STARTED
+### Phase 13 — Visible Reasoning Trace ✅ COMPLETE
 
 Surfaces step-by-step reasoning as a live, expandable tree while the response streams, instead of only showing final text.
+
+**Implemented (2026-07-07):** migration `20260628140000_20260628_phase13_reasoning_trace` adds `ReasoningTrace` (`messageId` unique, `provider`, `steps Json`). `src/lib/reasoning-trace.ts` provides `REASONING_SUFFIX`, `extractReasoningSteps()`, `createThoughtSplitter()`, `buildReasoningSteps()` (all Zod-validated), and fire-and-forget `persistReasoningTrace()`. `streamLLMWithLogging`/`runProvider` accept an opt-in `onThought` callback (streaming chat path only — race/replay/embed callers untouched): Anthropic uses native adaptive thinking (`thinking: {type: "adaptive", display: "summarized"}`, `thinking_delta` events line-buffered so each `onThought` call is one complete step); all other providers get `REASONING_SUFFIX` appended to the system message and their leading `Thought:` lines diverted to `onThought`, never reaching the visible stream. `POST /api/chat` (streaming) emits `data: {"thought": "..."}` SSE events and persists the trace after the assistant message is created; `GET /api/conversations` includes `reasoningTrace` per message so panels survive reload. `MessageBubble.tsx` renders a collapsible "Thinking" panel — live-expanded while streaming, collapsed by default once complete.
 
 **Prerequisite Prisma migration:** add `ReasoningTrace` model (`messageId` unique, `steps Json`, `provider`). Migration name: `20260628_phase13_reasoning_trace`.
 
@@ -316,9 +322,11 @@ Surfaces step-by-step reasoning as a live, expandable tree while the response st
 
 ---
 
-### Phase 14 — Generative UI Widgets ⬜ NOT STARTED
+### Phase 14 — Generative UI Widgets ✅ COMPLETE
 
 Lets the model render an interactive widget (slider, choice buttons, small chart) inside the chat instead of describing one in prose; the widget's user interaction feeds back into the conversation as a new turn.
+
+**Implemented (2026-07-07):** migration `20260628150000_20260628_phase14_widget_interaction` adds `WidgetInteraction` (`messageId` unique, `widgetType`, `schema Json`, `userResponse Json?`). `src/lib/generative-ui.ts` (client-safe, no Prisma) provides the Zod widget schemas, `parseWidgetDirective()`, `validateWidgetResponse()`, `summarizeWidgetResponse()`, and `WIDGET_SUFFIX` (appended to the system prompt in `buildConversation` so the model knows the directive format). Both `/api/chat` paths strip the directive from the persisted text, persist the `WidgetInteraction` row, and return it (`widget` field in the JSON response / `done` SSE event); `GET /api/conversations` includes `widgetInteraction` per message. `PATCH /api/messages/:messageId/widget` validates and stores `userResponse`. `WidgetRenderer.tsx` renders below `MessageBubble` via `MessageList.tsx`; on interaction `ChatUI.respondToWidget` PATCHes the response then auto-sends a synthesized follow-up user turn through the existing streaming send path.
 
 **Prerequisite Prisma migration:** add `WidgetInteraction` model (`messageId`, `widgetType`, `schema Json`, `userResponse Json?`). Migration name: `20260628_phase14_widget_interaction`.
 
@@ -330,9 +338,11 @@ Lets the model render an interactive widget (slider, choice buttons, small chart
 
 ---
 
-### Phase 15 — Proactive Ambient Insights ⬜ NOT STARTED
+### Phase 15 — Proactive Ambient Insights ✅ COMPLETE
 
 The system notices patterns across a user's conversation history and surfaces a suggestion unprompted, instead of only ever responding to direct questions.
+
+**Implemented (2026-07-07):** migration `20260628160000_20260628_phase15_proactive_insights` adds the `InsightStatus` enum (`PENDING|SENT|DISMISSED`) and `ProactiveInsight` model (`userId`, `triggerReason`, `suggestedMessage`, `relatedConversationIds String[]`, `status`, indexed `[userId, status, createdAt]`). `src/lib/ambient-insights.ts` holds the scan/detection logic (`findActiveUserIds`, `generateInsightForUser` — LLM pattern detection via `callLLMWithLogging`, Zod-validated, confidence-thresholded, one PENDING insight per user max). `ambient-insight-queue` + `src/workers/ambient-insight-worker.ts` run a repeatable `scan` job (default hourly) that fans out per-user jobs. `GET /api/insights/pending` (marks returned insights `SENT`) and `DELETE /api/insights/:id` (dismiss). `ChatUI.tsx` renders a dismissible banner polled via `refresh()`; "Explore" prefills the composer. `npm run worker:ambient-insight` + docker-compose service added.
 
 **Prerequisite Prisma migration:** add `ProactiveInsight` model (`userId`, `triggerReason`, `suggestedMessage`, `relatedConversationIds String[]`, `status` enum `PENDING|SENT|DISMISSED`). Migration name: `20260628_phase15_proactive_insights`.
 

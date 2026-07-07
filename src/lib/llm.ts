@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
+import { REASONING_SUFFIX, createThoughtSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
 
 type LLMMessage = { role: string; content: string };
 export type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama";
@@ -127,6 +128,7 @@ async function executeWithFailover(params: {
   conversationId: string;
   messages: LLMMessage[];
   onToken?: (token: string) => void;
+  onThought?: (thought: string) => void;
   isAborted?: () => boolean;
   providerOverride?: ProviderName;
 }): Promise<{ provider: ProviderName; model: string; response: ProviderResponse }> {
@@ -149,43 +151,99 @@ async function executeWithFailover(params: {
   throw lastError instanceof Error ? lastError : new Error("All providers failed");
 }
 
+// Appends the reasoning-priming suffix to the system message so marker-based providers
+// emit parseable `Thought:` lines. Anthropic uses native thinking and is never primed.
+function withReasoningSuffix(messages: LLMMessage[]): LLMMessage[] {
+  const idx = messages.findIndex((m) => m.role === "system");
+  if (idx === -1) return [{ role: "system", content: REASONING_SUFFIX }, ...messages];
+  return messages.map((m, i) => (i === idx ? { ...m, content: `${m.content}\n\n${REASONING_SUFFIX}` } : m));
+}
+
 export async function runProvider(params: {
   provider: ProviderName;
   model: string;
   mode: "sync" | "stream";
   messages: LLMMessage[];
   onToken?: (token: string) => void;
+  onThought?: (thought: string) => void;
   isAborted?: () => boolean;
 }): Promise<ProviderResponse> {
-  const { provider, model, mode, messages, onToken, isAborted } = params;
+  const { provider, model, mode, onToken, onThought, isAborted } = params;
+
+  // Reasoning capture is opt-in (streaming chat path only); direct callers (race, evals) are untouched.
+  const reasoning = mode === "stream" && Boolean(onThought);
+  const messages = reasoning && provider !== "anthropic" ? withReasoningSuffix(params.messages) : params.messages;
 
   if (provider === "grok") {
     const resp = await callGrok({ model, messages });
-    if (mode === "stream" && onToken && !isAborted?.()) onToken(resp.output);
+    if (mode === "stream" && !isAborted?.()) {
+      if (reasoning) {
+        const { steps, answer } = extractReasoningSteps(provider, resp.output);
+        for (const step of steps) onThought!(step.text);
+        onToken?.(answer);
+        return { ...resp, output: answer };
+      }
+      onToken?.(resp.output);
+    }
     return resp;
   }
 
   if (provider === "openai") {
-    if (mode === "stream") return streamOpenAI({ model, messages, onToken: onToken || (() => {}), isAborted });
+    if (mode === "stream") return streamWithThoughtSplitter(streamOpenAI, { model, messages, onToken, onThought, isAborted });
     return callOpenAI({ model, messages });
   }
 
   if (provider === "anthropic") {
-    if (mode === "stream") return streamAnthropic({ model, messages, onToken: onToken || (() => {}), isAborted });
+    if (mode === "stream") return streamAnthropic({ model, messages, onToken: onToken || (() => {}), onThought, isAborted });
     return callAnthropic({ model, messages });
   }
 
   if (provider === "ollama") {
     const resp = await callOllama({ model, messages });
-    if (mode === "stream" && onToken && !isAborted?.()) onToken(resp.output);
+    if (mode === "stream" && !isAborted?.()) {
+      if (reasoning) {
+        const { steps, answer } = extractReasoningSteps(provider, resp.output);
+        for (const step of steps) onThought!(step.text);
+        onToken?.(answer);
+        return { ...resp, output: answer };
+      }
+      onToken?.(resp.output);
+    }
     return resp;
   }
 
   if (mode === "stream") {
-    return streamGemini({ model, messages, onToken: onToken || (() => {}), isAborted });
+    return streamWithThoughtSplitter(streamGemini, { model, messages, onToken, onThought, isAborted });
   }
 
   return callGemini({ model, messages });
+}
+
+// Wraps a token-streaming provider so leading Thought:/Step: lines are diverted to onThought
+// instead of the visible token stream. No-op passthrough when reasoning capture is off.
+async function streamWithThoughtSplitter(
+  streamFn: (p: { model: string; messages: LLMMessage[]; onToken: (token: string) => void; isAborted?: () => boolean }) => Promise<ProviderResponse>,
+  params: {
+    model: string;
+    messages: LLMMessage[];
+    onToken?: (token: string) => void;
+    onThought?: (thought: string) => void;
+    isAborted?: () => boolean;
+  },
+): Promise<ProviderResponse> {
+  const onToken = params.onToken || (() => {});
+  if (!params.onThought) {
+    return streamFn({ model: params.model, messages: params.messages, onToken, isAborted: params.isAborted });
+  }
+  const splitter = createThoughtSplitter(onToken, params.onThought);
+  const resp = await streamFn({
+    model: params.model,
+    messages: params.messages,
+    onToken: splitter.push,
+    isAborted: params.isAborted,
+  });
+  splitter.flush();
+  return resp;
 }
 
 export async function callLLMWithLogging(params: {
@@ -244,8 +302,9 @@ export async function streamLLMWithLogging(params: {
   conversationId: string;
   messages: LLMMessage[];
   onToken: (token: string) => void;
+  onThought?: (thought: string) => void;
   isAborted?: () => boolean;
-}): Promise<{ output: string }> {
+}): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
 
@@ -255,6 +314,7 @@ export async function streamLLMWithLogging(params: {
       conversationId: params.conversationId,
       messages: params.messages,
       onToken: params.onToken,
+      onThought: params.onThought,
       isAborted: params.isAborted,
     });
 
@@ -278,7 +338,7 @@ export async function streamLLMWithLogging(params: {
       errorMessage: params.isAborted?.() ? "stream_aborted_by_user" : undefined,
     });
 
-    return { output: result.response.output };
+    return { output: result.response.output, provider: result.provider, model: result.model };
   } catch (error) {
     const responseTs = new Date();
     void sendLog({
@@ -515,6 +575,7 @@ async function streamAnthropic(params: {
   model: string;
   messages: LLMMessage[];
   onToken: (token: string) => void;
+  onThought?: (thought: string) => void;
   isAborted?: () => boolean;
 }): Promise<ProviderResponse> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
@@ -525,17 +586,41 @@ async function streamAnthropic(params: {
   let output = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let thinkBuffer = "";
+
+  // Every onThought call carries one complete reasoning line; native thinking deltas are
+  // fragments, so buffer them per line here.
+  const emitThinkingLines = (final: boolean) => {
+    let newline;
+    while ((newline = thinkBuffer.indexOf("\n")) !== -1) {
+      const line = thinkBuffer.slice(0, newline).trim();
+      thinkBuffer = thinkBuffer.slice(newline + 1);
+      if (line) params.onThought?.(line);
+    }
+    if (final && thinkBuffer.trim()) {
+      params.onThought?.(thinkBuffer.trim());
+      thinkBuffer = "";
+    }
+  };
 
   const stream = await client.messages.create({
     model: params.model,
     max_tokens: MAX_OUTPUT_TOKENS,
     ...(system ? { system } : {}),
+    // Native reasoning: adaptive thinking with summarized display, only when the caller
+    // captures thoughts. Thinking tokens draw from max_tokens, same as Gemini's budget.
+    ...(params.onThought ? { thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
     messages: msgs,
     stream: true,
   });
 
   for await (const event of stream) {
     if (params.isAborted?.()) break;
+    if (event.type === "content_block_delta" && event.delta.type === "thinking_delta") {
+      thinkBuffer += event.delta.thinking || "";
+      emitThinkingLines(false);
+    }
+    if (event.type === "content_block_stop") emitThinkingLines(true);
     if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
       const token = event.delta.text;
       if (token) {

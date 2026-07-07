@@ -30,7 +30,7 @@ export async function GET(req: Request) {
       include: {
         messages: {
           orderBy: { createdAt: "asc" },
-          include: { raceResults: { orderBy: { createdAt: "asc" } } },
+          include: { raceResults: { orderBy: { createdAt: "asc" } }, reasoningTrace: true, widgetInteraction: true },
         },
       },
     });
