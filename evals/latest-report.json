@@ -1,22 +1,26 @@
 {
   "baseUrl": "http://localhost:3000",
   "reuseConversation": true,
-  "sharedConversationId": "cmr9n4osp001h8zyqcr2luuoi",
+  "sharedConversationId": "cmrg83i1g000i8zyda672k0ev",
   "total": 3,
-  "passed": 3,
-  "failed": 0,
+  "passed": 1,
+  "failed": 2,
   "results": [
     {
       "id": "greeting-basic",
-      "passed": true,
-      "failures": [],
-      "output": "Hi there! So glad to connect. How can I help you today?"
+      "passed": false,
+      "failures": [
+        "Request failed (502): Chat request failed: Grok API error 403: {\"code\":\"permission-denied\",\"error\":\"Your newly created team doesn't have any credits or licenses yet. You can purchase those on https://console.x.ai/team/e0f4a5f6-6c27-449f-8778-0652f815d67c.\"}"
+      ],
+      "output": ""
     },
     {
       "id": "markdown-table",
-      "passed": true,
-      "failures": [],
-      "output": "Here's a quick comparison:\n\n| Fruit | Taste |\n|---|---|\n| Apple | Sweet, Tart |\n| Orange | Citrusy, Tangy |"
+      "passed": false,
+      "failures": [
+        "Request failed (502): Chat request failed: Grok API error 403: {\"code\":\"permission-denied\",\"error\":\"Your newly created team doesn't have any credits or licenses yet. You can purchase those on https://console.x.ai/team/e0f4a5f6-6c27-449f-8778-0652f815d67c.\"}"
+      ],
+      "output": ""
     },
     {
       "id": "safe-refusal",

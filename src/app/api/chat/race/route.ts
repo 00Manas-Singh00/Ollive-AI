@@ -5,6 +5,7 @@ import { requireSessionUser } from "@/lib/auth";
 import { moderateInput, moderateOutput, refusalTemplate } from "@/lib/safety";
 import { resolveSystemPrompt } from "@/lib/prompt-manager";
 import { configuredProviders, providerModel, runProvider, sendLog, preview, PROVIDER_NAMES, type ProviderName } from "@/lib/llm";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 const CONTEXT_WINDOW = Math.min(64, Math.max(4, Number(process.env.LLM_CONTEXT_WINDOW ?? 8) || 8));
 
@@ -34,8 +35,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (conversationId) {
-      const conversation = await prisma.conversation.findFirst({ where: { id: conversationId, userId: user.id } });
-      if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+      const { conversation } = await assertConversationAccess(user, conversationId, "COLLABORATOR");
       if (conversation.status === "paused")
         return NextResponse.json({ error: "Conversation is paused. Resume it to continue." }, { status: 409 });
     } else {
@@ -147,8 +147,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ conversationId, userMessage, raceResults, errors });
   } catch (error) {
+    const known = collabErrorResponse(error);
+    if (known) return known;
     const message = error instanceof Error ? error.message : "Failed to process race request";
-    if (message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: `Race request failed: ${message}` }, { status: 502 });
   }
 }

@@ -16,6 +16,9 @@
     "worker:ingest": "dotenv -e .env -- tsx src/workers/ingest-worker.ts",
     "worker:quality-score": "dotenv -e .env -- tsx src/workers/quality-score-worker.ts",
     "worker:ambient-insight": "dotenv -e .env -- tsx src/workers/ambient-insight-worker.ts",
+    "worker:embedding": "dotenv -e .env -- tsx src/workers/embedding-worker.ts",
+    "worker:scheduled-prompt": "dotenv -e .env -- tsx src/workers/scheduled-prompt-worker.ts",
+    "worker:prompt-lab": "dotenv -e .env -- tsx src/workers/prompt-lab-worker.ts",
     "eval:run": "node evals/run.mjs",
     "eval:report": "cat evals/latest-report.json"
   },

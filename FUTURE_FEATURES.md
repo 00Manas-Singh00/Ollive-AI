@@ -142,7 +142,7 @@ Closes the loop between Phase 2 (Prompt Studio) and Phase 4/6 (annotations + qua
 
 ---
 
-## Phase 22 — Cost Guardrails & Budgets 💸
+## Phase 22 — Cost Guardrails & Budgets 💸 ✅ COMPLETE (2026-07-11)
 
 Hard monthly spend budgets per user/workspace with soft warnings, hard cutoffs, and automatic downgrade to a cheap model near the limit. Builds directly on the Phase 1 cost table (`src/lib/cost.ts`).
 
@@ -185,7 +185,7 @@ One-click "analyze this conversation": an LLM-generated structured report (topic
 
 ---
 
-## Phase 24 — Workspace Command Palette (⌘K) ⌨️
+## Phase 24 — Workspace Command Palette (⌘K) ⌨️ ✅ COMPLETE (2026-07-08)
 
 A global keyboard-driven palette: jump to conversations, trigger actions (new chat, replay, race mode, switch provider, open analytics), and run slash-commands — fuzzy-matched, fully keyboard navigable.
 

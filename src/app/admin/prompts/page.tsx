@@ -36,7 +36,154 @@ function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
   );
 }
 
+type PromptExperiment = {
+  id: string;
+  profileKey: string;
+  championVersionId: string;
+  challengerVersionId: string;
+  championVersion: PromptVersion;
+  challengerVersion: PromptVersion;
+  trafficSplit: number;
+  status: "RUNNING" | "CONCLUDED_CHAMPION" | "CONCLUDED_CHALLENGER" | "ABORTED";
+  minSamples: number;
+  autoPromote: boolean;
+  createdAt: string;
+  concludedAt: string | null;
+  liveMetrics?: {
+    champion: { total: number; successRate: number };
+    challenger: { total: number; successRate: number };
+    z: number | null;
+    significant: boolean;
+    readyToConclude: boolean;
+    winner: "champion" | "challenger" | null;
+  };
+};
+
+function ExperimentsLab({ profiles, selectedKey }: { profiles: PromptProfile[]; selectedKey: string | null }) {
+  const [experiments, setExperiments] = useState<PromptExperiment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [trafficSplit, setTrafficSplit] = useState(10);
+  const [minSamples, setMinSamples] = useState(100);
+  const [autoPromote, setAutoPromote] = useState(false);
+
+  const fetchExperiments = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/experiments");
+      if (!res.ok) return;
+      const data = await res.json();
+      setExperiments(data.experiments || []);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchExperiments(); }, [fetchExperiments]);
+
+  async function handleCreate() {
+    if (!selectedKey) return;
+    setCreating(true);
+    try {
+      const res = await fetch("/api/admin/experiments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileKey: selectedKey,
+          generateChallenger: true,
+          trafficSplit: trafficSplit / 100,
+          minSamples,
+          autoPromote,
+        }),
+      });
+      if (!res.ok) { const d = await res.json(); alert(d.error || "Failed to create experiment"); return; }
+      await fetchExperiments();
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleAbort(id: string) {
+    const res = await fetch(`/api/admin/experiments/${id}/abort`, { method: "POST" });
+    if (res.ok) fetchExperiments();
+  }
+
+  const runningForProfile = experiments.find(e => e.profileKey === selectedKey && e.status === "RUNNING");
+
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
+      <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>Prompt Optimization Lab</div>
+      <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 20 }}>
+        A/B tests a champion prompt version against an AI-generated challenger, evaluated hourly on annotation thumbs, quality scores, and refusal rate.
+      </div>
+
+      {selectedKey && !runningForProfile && (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 16, marginBottom: 20, background: "var(--panel)" }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Start an experiment for &ldquo;{selectedKey}&rdquo;</div>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: "var(--muted)" }}>
+              Traffic split (challenger): {trafficSplit}%
+              <input type="range" min={1} max={50} value={trafficSplit} onChange={e => setTrafficSplit(Number(e.target.value))} style={{ display: "block", width: 180, accentColor: "var(--accent)" }} />
+            </label>
+            <label style={{ fontSize: 12, color: "var(--muted)" }}>
+              Min samples per arm
+              <input type="number" min={1} value={minSamples} onChange={e => setMinSamples(Number(e.target.value))} style={{ ...inputStyle, width: 100, display: "block" }} />
+            </label>
+            <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={autoPromote} onChange={e => setAutoPromote(e.target.checked)} />
+              Auto-promote winning challenger
+            </label>
+          </div>
+          <button onClick={handleCreate} disabled={creating} style={btnPrimary}>{creating ? "Generating challenger…" : "Generate challenger with AI & start"}</button>
+        </div>
+      )}
+      {selectedKey && runningForProfile && (
+        <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 20 }}>An experiment is already running for this profile — see below.</div>
+      )}
+
+      {loading ? (
+        <div style={{ color: "var(--muted)" }}>Loading…</div>
+      ) : experiments.length === 0 ? (
+        <div style={{ color: "var(--muted)", fontSize: 13 }}>No experiments yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {experiments.map(e => (
+            <div key={e.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 14, background: "var(--panel)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{e.profileKey} — champion v{e.championVersion.version} vs challenger v{e.challengerVersion.version}</span>
+                <span style={{ fontSize: 11, color: e.status === "RUNNING" ? "var(--accent)" : "var(--muted)" }}>{e.status}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+                Traffic split {Math.round(e.trafficSplit * 100)}% · min samples {e.minSamples} · auto-promote {e.autoPromote ? "on" : "off"}
+              </div>
+              {e.liveMetrics && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12, marginBottom: 8 }}>
+                  <div style={{ background: "var(--panel-strong)", borderRadius: 4, padding: 8 }}>
+                    Champion: {e.liveMetrics.champion.total} samples, {(e.liveMetrics.champion.successRate * 100).toFixed(0)}% success
+                  </div>
+                  <div style={{ background: "var(--panel-strong)", borderRadius: 4, padding: 8 }}>
+                    Challenger: {e.liveMetrics.challenger.total} samples, {(e.liveMetrics.challenger.successRate * 100).toFixed(0)}% success
+                  </div>
+                  <div style={{ gridColumn: "1 / -1", fontSize: 11, color: e.liveMetrics.significant ? "var(--accent)" : "var(--muted)" }}>
+                    {e.liveMetrics.significant
+                      ? `Significant (z=${e.liveMetrics.z?.toFixed(2)}) — ${e.liveMetrics.winner === "challenger" ? "challenger" : "champion"} leading`
+                      : "Not yet significant"}
+                  </div>
+                </div>
+              )}
+              {e.status === "RUNNING" && (
+                <button onClick={() => handleAbort(e.id)} style={btnSecondary}>Abort</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PromptStudioPage() {
+  const [tab, setTab] = useState<"studio" | "lab">("studio");
   const [profiles, setProfiles] = useState<PromptProfile[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [versions, setVersions] = useState<PromptVersion[]>([]);
@@ -212,6 +359,10 @@ export default function PromptStudioPage() {
           <span style={{ fontWeight: 600, fontSize: 14 }}>Prompt Studio</span>
           <button onClick={() => setShowNewProfile(true)} style={{ background: "var(--accent)", color: "#000", border: "none", borderRadius: 4, padding: "4px 8px", fontSize: 12, cursor: "pointer" }}>+ New</button>
         </div>
+        <div style={{ display: "flex", gap: 4, padding: "10px 16px", borderBottom: "1px solid var(--line)" }}>
+          <button onClick={() => setTab("studio")} style={{ ...btnMini, flex: 1, background: tab === "studio" ? "var(--accent)" : "transparent", color: tab === "studio" ? "#000" : "var(--muted)" }}>Studio</button>
+          <button onClick={() => setTab("lab")} style={{ ...btnMini, flex: 1, background: tab === "lab" ? "var(--accent)" : "transparent", color: tab === "lab" ? "#000" : "var(--muted)" }}>Lab</button>
+        </div>
         {profiles.map(p => (
           <div
             key={p.key}
@@ -241,7 +392,9 @@ export default function PromptStudioPage() {
 
       {/* Main area */}
       <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
-        {!selectedProfile ? (
+        {tab === "lab" ? (
+          <ExperimentsLab profiles={profiles} selectedKey={selectedKey} />
+        ) : !selectedProfile ? (
           <div style={{ padding: 32, color: "var(--muted)" }}>Select or create a profile</div>
         ) : (
           <>

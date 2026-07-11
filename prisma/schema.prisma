@@ -15,10 +15,35 @@ enum UserRole {
   ADMIN
 }
 
+enum BudgetAction {
+  WARN
+  DOWNGRADE
+  BLOCK
+}
+
 enum InsightStatus {
   PENDING
   SENT
   DISMISSED
+}
+
+enum ToolCallStatus {
+  PENDING
+  SUCCESS
+  ERROR
+}
+
+enum ConversationMemberRole {
+  OWNER
+  COLLABORATOR
+  VIEWER
+}
+
+enum PromptExperimentStatus {
+  RUNNING
+  CONCLUDED_CHAMPION
+  CONCLUDED_CHALLENGER
+  ABORTED
 }
 
 model User {
@@ -27,11 +52,15 @@ model User {
   name          String
   role            UserRole             @default(VIEWER)
   rateLimitExempt Boolean              @default(false)
+  monthlyBudgetUsd Float?
+  budgetAction     BudgetAction        @default(WARN)
   createdAt       DateTime             @default(now())
   conversations   Conversation[]
   annotations     MessageAnnotation[]
   embedTokens     EmbedToken[]
   insights        ProactiveInsight[]
+  scheduledPrompts ScheduledPrompt[]
+  conversationMemberships ConversationMember[]
 }
 
 model ProactiveInsight {
@@ -76,15 +105,32 @@ model Conversation {
   shareToken String?     @unique
   replayMeta Json?
   rootConversationId String?
+  isCollaborative Boolean @default(false)
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   messages   ChatMessage[]
   logs       InferenceLog[]
   safetyLogs SafetyAuditLog[]
   promptDecisions PromptDecision[]
+  report     ConversationReport?
+  members    ConversationMember[]
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isArchived, isPinned, updatedAt])
+}
+
+model ConversationMember {
+  id             String                 @id @default(cuid())
+  conversationId String
+  userId         String
+  role           ConversationMemberRole @default(COLLABORATOR)
+  createdAt      DateTime               @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
 }
 
 model PromptProfile {
@@ -111,9 +157,30 @@ model PromptVersion {
   createdAt       DateTime @default(now())
 
   profile PromptProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  championOf   PromptExperiment[] @relation("ExperimentChampion")
+  challengerOf PromptExperiment[] @relation("ExperimentChallenger")
 
   @@unique([profileId, version])
   @@index([profileId, createdAt])
+}
+
+model PromptExperiment {
+  id                  String                 @id @default(cuid())
+  profileKey          String
+  championVersionId   String
+  challengerVersionId String
+  trafficSplit        Float                  @default(0.1)
+  status              PromptExperimentStatus @default(RUNNING)
+  minSamples          Int                    @default(100)
+  autoPromote         Boolean                @default(false)
+  metrics             Json?
+  concludedAt         DateTime?
+  createdAt           DateTime               @default(now())
+
+  championVersion   PromptVersion @relation("ExperimentChampion", fields: [championVersionId], references: [id], onDelete: Cascade)
+  challengerVersion PromptVersion @relation("ExperimentChallenger", fields: [challengerVersionId], references: [id], onDelete: Cascade)
+
+  @@index([profileKey, status])
 }
 
 model PromptDecision {
@@ -165,6 +232,8 @@ model ChatMessage {
   widgetInteraction WidgetInteraction?
   branchParent   ChatMessage?  @relation("MessageBranch", fields: [branchParentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   branchChildren ChatMessage[] @relation("MessageBranch")
+  embedding      MessageEmbedding?
+  toolCalls      ToolCall[]
 
   @@index([conversationId, createdAt])
   @@index([branchParentId])
@@ -206,6 +275,21 @@ model WidgetInteraction {
   updatedAt    DateTime @updatedAt
 
   message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model ToolCall {
+  id        String         @id @default(cuid())
+  messageId String
+  toolName  String
+  arguments Json
+  result    Json?
+  status    ToolCallStatus @default(PENDING)
+  latencyMs Int?
+  createdAt DateTime       @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
 }
 
 model QualityScore {
@@ -325,4 +409,56 @@ model IngestionDLQ {
 
   @@index([eventId])
   @@index([conversationId, createdAt])
+}
+
+model SpendCache {
+  id       String @id @default(cuid())
+  userId   String
+  // month keyed as "YYYY-MM" — rollover is automatic, no cron needed
+  month    String
+  spendUsd Float  @default(0)
+
+  @@unique([userId, month])
+}
+
+model ConversationReport {
+  id                       String   @id @default(cuid())
+  conversationId           String   @unique
+  report                   Json
+  model                    String
+  generatedAt              DateTime @default(now())
+  messageCountAtGeneration Int
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model ScheduledPrompt {
+  id                      String    @id @default(cuid())
+  userId                  String
+  cronExpression          String
+  prompt                  String
+  provider                String
+  isActive                Boolean   @default(true)
+  lastRunAt               DateTime?
+  deliveryConversationId  String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+model MessageEmbedding {
+  id         String   @id @default(cuid())
+  messageId  String   @unique
+  // embedding stored as JSON float array; upgrade path: pgvector Unsupported("vector(768)")
+  vector     Json
+  // embedding model name so a model swap can invalidate stale vectors
+  model      String
+  embeddedAt DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([embeddedAt])
 }

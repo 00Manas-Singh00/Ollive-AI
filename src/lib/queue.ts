@@ -69,3 +69,72 @@ export function getAmbientInsightQueue(): Queue {
 
   return cachedAmbientInsightQueue;
 }
+
+let cachedEmbeddingQueue: Queue | null = null;
+
+export function getEmbeddingQueue(): Queue {
+  if (cachedEmbeddingQueue) return cachedEmbeddingQueue;
+
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedEmbeddingQueue = new Queue("embedding-queue", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 1000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  });
+
+  return cachedEmbeddingQueue;
+}
+
+let cachedPromptLabQueue: Queue | null = null;
+
+export function getPromptLabQueue(): Queue {
+  if (cachedPromptLabQueue) return cachedPromptLabQueue;
+
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedPromptLabQueue = new Queue("prompt-lab-queue", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  });
+
+  return cachedPromptLabQueue;
+}
+
+let cachedScheduledPromptQueue: Queue | null = null;
+
+export function getScheduledPromptQueue(): Queue {
+  if (cachedScheduledPromptQueue) return cachedScheduledPromptQueue;
+
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is not configured");
+  }
+
+  cachedScheduledPromptQueue = new Queue("scheduled-prompt-queue", {
+    connection: { url: redisUrl },
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    },
+  });
+
+  return cachedScheduledPromptQueue;
+}

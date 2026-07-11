@@ -1,6 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import BranchTree from "./BranchTree";
+
+type SearchHit = { conversationId: string; title: string; snippet: string; score: number; messageId: string };
 
 type Message = { id: string; role: string; content: string };
 type ReplayMeta = { forkedFrom: string; forkedFromTitle: string; providerOverride: string | null; promptVersionOverride: number | null };
@@ -18,8 +21,24 @@ function parseColorTag(tag: string): ColorTag | null {
 }
 function serializeColorTag(tag: ColorTag) { return `${tag.label}::${tag.color}`; }
 
+// Wrap query-term occurrences in the snippet with <mark> for the search results view.
+function highlightMatch(snippet: string, query: string): React.ReactNode {
+  const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+  if (terms.length === 0) return snippet;
+  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const parts = snippet.split(new RegExp(`(${escaped.join("|")})`, "gi"));
+  return parts.map((part, i) =>
+    terms.includes(part.toLowerCase())
+      ? <mark key={i} style={{ background: "rgba(245, 158, 11, 0.35)", color: "inherit", borderRadius: 2 }}>{part}</mark>
+      : part,
+  );
+}
+
+type BudgetStatus = { status: "ok" | "warning" | "exceeded"; spendUsd: number; budgetUsd: number | null; action: "WARN" | "DOWNGRADE" | "BLOCK" };
+
 type Props = {
   user: User;
+  budget?: BudgetStatus | null;
   conversations: Conversation[];
   activeId: string | null;
   search: string;
@@ -41,12 +60,14 @@ type Props = {
   onSetTagDrafts: (fn: (prev: Record<string, { label: string; color: string }>) => Record<string, { label: string; color: string }>) => void;
   onShareConversation: (id: string) => void;
   onReplayConversation: (id: string) => void;
+  onAnalyzeConversation: (id: string) => void;
+  onOpenSchedules: () => void;
   branchRefreshKey?: number;
 };
 
 function ConversationCard({
   c, activeId, openMenuId, tagDrafts,
-  onSelect, onMenuToggle, onUpdate, onDelete, onUpdateStatus, onShare, onReplay, onSetTagDrafts,
+  onSelect, onMenuToggle, onUpdate, onDelete, onUpdateStatus, onShare, onReplay, onAnalyze, onSetTagDrafts,
 }: {
   c: Conversation; activeId: string | null; openMenuId: string | null;
   tagDrafts: Record<string, { label: string; color: string }>;
@@ -55,6 +76,7 @@ function ConversationCard({
   onDelete: () => void; onUpdateStatus: (action: "pause" | "resume") => void;
   onShare: () => void;
   onReplay: () => void;
+  onAnalyze: () => void;
   onSetTagDrafts: (fn: (prev: Record<string, { label: string; color: string }>) => Record<string, { label: string; color: string }>) => void;
 }) {
   return (
@@ -70,6 +92,7 @@ function ConversationCard({
               <button className="menu-item" onClick={() => onUpdate({ isArchived: !c.isArchived })}>{c.isArchived ? "Unarchive" : "Archive"}</button>
               <button className="menu-item" onClick={onShare}>Copy share link</button>
               <button className="menu-item" onClick={onReplay}>Replay</button>
+              <button className="menu-item" onClick={onAnalyze}>Analyze</button>
               <button className="menu-item" onClick={() => {
                 const l = (window.prompt("Label", "") || "").trim(); if (!l) return;
                 const cc = tagDrafts[c.id]?.color || TAG_COLORS[0];
@@ -104,13 +127,50 @@ function ConversationCard({
 }
 
 export default function ConversationSidebar({
-  user, conversations, activeId, search, showArchived, openMenuId, openNewMenu,
+  user, budget, conversations, activeId, search, showArchived, openMenuId, openNewMenu,
   tagDrafts, folderNames,
   onSelectConversation, onSearchChange, onToggleArchived, onSetOpenMenuId,
   onSetOpenNewMenu, onNewConversation, onNewFolder,
   onUpdateConversation, onDeleteConversation, onUpdateStatus, onSetTagDrafts, onShareConversation, onReplayConversation,
+  onAnalyzeConversation,
+  onOpenSchedules,
   branchRefreshKey,
 }: Props) {
+  // Phase 16: semantic results for the current search text, fetched debounced;
+  // null means "not searching" (keyword-filtered conversation list shows instead).
+  const [semanticHits, setSemanticHits] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (!q) {
+      setSemanticHits(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: controller.signal });
+        if (res.ok) {
+          const data = await res.json();
+          setSemanticHits(data.results ?? []);
+        } else {
+          setSemanticHits(null);
+        }
+      } catch {
+        // aborted or network error — keep previous state
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [search]);
+
   const cardProps = (c: Conversation) => ({
     c, activeId, openMenuId, tagDrafts,
     onSelect: () => onSelectConversation(c.id),
@@ -120,11 +180,27 @@ export default function ConversationSidebar({
     onUpdateStatus: (action: "pause" | "resume") => { onUpdateStatus(c.id, action); onSetOpenMenuId(null); },
     onShare: () => { onShareConversation(c.id); onSetOpenMenuId(null); },
     onReplay: () => { onReplayConversation(c.id); onSetOpenMenuId(null); },
+    onAnalyze: () => { onAnalyzeConversation(c.id); onSetOpenMenuId(null); },
     onSetTagDrafts,
   });
 
+  // Phase 22: thin usage meter — only rendered once a budget is configured.
+  const budgetPct = budget?.budgetUsd ? Math.min(1, budget.spendUsd / budget.budgetUsd) : null;
+  const budgetColor = budget?.status === "exceeded" ? "#ef4444" : budget?.status === "warning" ? "#f59e0b" : "#22c55e";
+
   return (
     <aside className="chat-sidebar">
+      {budgetPct !== null && (
+        <div style={{ marginBottom: 10 }} title={`$${budget!.spendUsd.toFixed(2)} of $${budget!.budgetUsd!.toFixed(2)} this month`}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.72rem", color: "var(--text-muted)", marginBottom: 3 }}>
+            <span>Monthly usage</span>
+            <span style={{ color: budgetColor }}>${budget!.spendUsd.toFixed(2)} / ${budget!.budgetUsd!.toFixed(2)}</span>
+          </div>
+          <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${Math.round(budgetPct * 100)}%`, background: budgetColor, borderRadius: 2, transition: "width 0.3s" }} />
+          </div>
+        </div>
+      )}
       <div className="brand-row">
         <div>
           <p className="brand-kicker">{user.email}</p>
@@ -142,7 +218,12 @@ export default function ConversationSidebar({
       </div>
 
       <div className="search-row">
-        <input value={search} onChange={(e) => onSearchChange(e.target.value)} placeholder="Search" />
+        <input
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") onSearchChange(""); }}
+          placeholder="Search"
+        />
         <button className="mini-btn" onClick={onToggleArchived}>{showArchived ? "Hide archived" : "Show archived"}</button>
       </div>
 
@@ -152,6 +233,14 @@ export default function ConversationSidebar({
         onSelect={onSelectConversation}
         refreshKey={branchRefreshKey}
       />
+
+      <button
+        className="mini-btn"
+        style={{ width: "100%", marginBottom: 8, textAlign: "left" }}
+        onClick={onOpenSchedules}
+      >
+        ⏰ Scheduled Prompts
+      </button>
 
       {(user.role === "ANALYST" || user.role === "PROMPT_EDITOR" || user.role === "ADMIN") && (
         <a
@@ -196,20 +285,46 @@ export default function ConversationSidebar({
         </a>
       )}
 
-      {folderNames.map((folder) => (
-        <div key={folder} className="folder-dropzone">
-          <p className="folder-name">{folder}</p>
-          {conversations.filter((c) => c.folder === folder).map((c) => (
-            <ConversationCard key={c.id} {...cardProps(c)} />
+      {search.trim() && semanticHits !== null ? (
+        <div className="thread-list">
+          {searching && <p className="folder-name">Searching…</p>}
+          {!searching && semanticHits.length === 0 && <p className="folder-name">No matches</p>}
+          {semanticHits.map((hit) => (
+            <article
+              key={hit.conversationId}
+              className={`thread-card ${hit.conversationId === activeId ? "active" : ""}`}
+              onClick={() => onSelectConversation(hit.conversationId)}
+            >
+              <div className="thread-top">
+                <h3>{hit.title}</h3>
+              </div>
+              <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", margin: "4px 0 0" }}>
+                {highlightMatch(hit.snippet, search)}
+              </p>
+              <div className="thread-meta">
+                <span className="status">{Math.round(hit.score * 100)}% match</span>
+              </div>
+            </article>
           ))}
         </div>
-      ))}
+      ) : (
+        <>
+          {folderNames.map((folder) => (
+            <div key={folder} className="folder-dropzone">
+              <p className="folder-name">{folder}</p>
+              {conversations.filter((c) => c.folder === folder).map((c) => (
+                <ConversationCard key={c.id} {...cardProps(c)} />
+              ))}
+            </div>
+          ))}
 
-      <div className="thread-list">
-        {conversations.filter((c) => !c.folder).map((c) => (
-          <ConversationCard key={c.id} {...cardProps(c)} />
-        ))}
-      </div>
+          <div className="thread-list">
+            {conversations.filter((c) => !c.folder).map((c) => (
+              <ConversationCard key={c.id} {...cardProps(c)} />
+            ))}
+          </div>
+        </>
+      )}
 
     </aside>
   );

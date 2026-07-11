@@ -13,18 +13,20 @@ export async function GET(req: Request) {
 
     const conversations = await prisma.conversation.findMany({
       where: {
-        userId: user.id,
-        ...(includeArchived ? {} : { isArchived: false }),
-        ...(folder ? { folder } : {}),
-        ...(tag ? { tags: { has: tag } } : {}),
-        ...(q
-          ? {
-              OR: [
-                { title: { contains: q, mode: "insensitive" } },
-                { messages: { some: { content: { contains: q, mode: "insensitive" } } } },
-              ],
-            }
-          : {}),
+        AND: [
+          { OR: [{ userId: user.id }, { members: { some: { userId: user.id } } }] },
+          includeArchived ? {} : { isArchived: false },
+          folder ? { folder } : {},
+          tag ? { tags: { has: tag } } : {},
+          q
+            ? {
+                OR: [
+                  { title: { contains: q, mode: "insensitive" } },
+                  { messages: { some: { content: { contains: q, mode: "insensitive" } } } },
+                ],
+              }
+            : {},
+        ],
       },
       orderBy: [{ isPinned: "desc" }, { updatedAt: "desc" }],
       include: {
@@ -32,9 +34,16 @@ export async function GET(req: Request) {
           orderBy: { createdAt: "asc" },
           include: { raceResults: { orderBy: { createdAt: "asc" } }, reasoningTrace: true, widgetInteraction: true },
         },
+        members: {
+          include: { user: { select: { id: true, name: true, email: true } } },
+        },
       },
     });
-    return NextResponse.json({ conversations });
+    const withRole = conversations.map((c) => ({
+      ...c,
+      myRole: c.userId === user.id ? "OWNER" : c.members.find((m) => m.userId === user.id)?.role ?? "VIEWER",
+    }));
+    return NextResponse.json({ conversations: withRole });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

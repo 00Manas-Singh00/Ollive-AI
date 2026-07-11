@@ -1,6 +1,7 @@
 import { Worker, QueueEvents, Queue } from "bullmq";
 import { prisma } from "@/lib/prisma";
 import { logSchema, type IngestPayload } from "@/lib/ingest-schema";
+import { recordSpend } from "@/lib/budget";
 
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
@@ -55,6 +56,23 @@ const worker = new Worker<JobData>(
         errorMessage: payload.errorMessage,
       },
     });
+
+    // Phase 22: spend accounting lives here, off the request path.
+    if (payload.status === "success" && ((payload.promptTokens ?? 0) > 0 || (payload.completionTokens ?? 0) > 0)) {
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: payload.conversationId },
+        select: { userId: true },
+      });
+      if (conversation) {
+        await recordSpend(
+          conversation.userId,
+          payload.provider,
+          payload.model,
+          payload.promptTokens ?? 0,
+          payload.completionTokens ?? 0,
+        );
+      }
+    }
 
     await prisma.ingestionEvent.upsert({
       where: { id: job.data.eventId },

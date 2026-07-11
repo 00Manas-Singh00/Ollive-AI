@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import ToolCallCard from "./ToolCallCard";
 
 function CodeBlock({ className, children }: { className?: string; children?: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
@@ -241,6 +242,44 @@ function CitationsBar({ messageId }: { messageId: string }) {
   );
 }
 
+function SpeakerButton({ text }: { text: string }) {
+  const [loading, setLoading] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  async function toggle() {
+    if (playing) {
+      audioRef.current?.pause();
+      setPlaying(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/speech/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.slice(0, 4000) }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => { setPlaying(false); URL.revokeObjectURL(url); };
+      audioRef.current = audio;
+      await audio.play();
+      setPlaying(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button className="mini-btn" onClick={toggle} disabled={loading} title={playing ? "Stop playback" : "Play response"}>
+      {loading ? "…" : playing ? "⏸" : "🔊"}
+    </button>
+  );
+}
+
 function ThinkingPanel({ thoughts, streaming }: { thoughts: string[]; streaming?: boolean }) {
   const [open, setOpen] = useState(!!streaming);
 
@@ -292,6 +331,7 @@ export default function MessageBubble({ messageId, role, content, thoughts, stre
       )}
       <div className={`bubble${streaming ? " streaming" : ""}`}>
         {role === "assistant" && thoughts && <ThinkingPanel thoughts={thoughts} streaming={streaming} />}
+        {role === "assistant" && !streaming && <ToolCallCard messageId={messageId} />}
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeHighlight]}
@@ -312,6 +352,9 @@ export default function MessageBubble({ messageId, role, content, thoughts, stre
       {role === "assistant" && !streaming && (
         <>
           <CitationsBar messageId={messageId} />
+          <div className="annotation-bar">
+            <SpeakerButton text={content} />
+          </div>
           <AnnotationBar messageId={messageId} />
         </>
       )}

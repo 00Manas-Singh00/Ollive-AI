@@ -5,6 +5,7 @@ import { requireSessionUser } from "@/lib/auth";
 import { callLLMWithLogging, PROVIDER_NAMES, type ProviderName } from "@/lib/llm";
 import { moderateOutput, refusalTemplate } from "@/lib/safety";
 import { resolveSystemPrompt } from "@/lib/prompt-manager";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 const CONTEXT_WINDOW = Math.min(64, Math.max(4, Number(process.env.LLM_CONTEXT_WINDOW ?? 8) || 8));
 
@@ -27,8 +28,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!parsed.success) return NextResponse.json({ error: "Invalid branch options" }, { status: 400 });
     const { fromMessageId, providerOverride, promptVersionOverride } = parsed.data;
 
+    await assertConversationAccess(user, id, "COLLABORATOR");
     const original = await prisma.conversation.findFirst({
-      where: { id, userId: user.id },
+      where: { id },
       include: { messages: { orderBy: { createdAt: "asc" } } },
     });
     if (!original) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
@@ -118,7 +120,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ conversation });
   } catch (error) {
-    if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const known = collabErrorResponse(error);
+    if (known) return known;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Branch failed" }, { status: 500 });
   }
 }

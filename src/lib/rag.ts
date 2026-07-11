@@ -33,6 +33,14 @@ function hashTerm(term: string): number {
   return h % HASH_DIM;
 }
 
+// Identifies the embedding scheme on persisted vectors so a future model swap
+// (e.g. pgvector + a real embedding API) can invalidate stale rows.
+export const EMBEDDING_MODEL = "tfidf-hash-512";
+
+export function embedText(text: string): number[] {
+  return tfidfVector(text);
+}
+
 function tfidfVector(text: string): number[] {
   const tokens = tokenize(text);
   const vec = new Array<number>(HASH_DIM).fill(0);
@@ -59,7 +67,7 @@ function magnitude(v: number[]): number {
   return Math.sqrt(v.reduce((s, x) => s + x * x, 0));
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   const magA = magnitude(a);
   const magB = magnitude(b);
   if (magA === 0 || magB === 0) return 0;

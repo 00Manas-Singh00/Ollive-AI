@@ -145,31 +145,15 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 2 — Prompt Studio ⬜ NOT STARTED
+### Phase 2 — Prompt Studio ✅ COMPLETE
 
-**New routes (admin only):**
-- `GET /POST /api/admin/prompts`
-- `GET /POST /api/admin/prompts/:profileKey/versions`
-- `POST /api/admin/prompts/:profileKey/activate`
-- `POST /api/admin/prompts/:profileKey/rollback`
-
-**New files:**
-- `src/app/admin/prompts/page.tsx` — two-pane layout: profile list + version editor.
-- `src/lib/diff.ts` — minimal Myers diff (no external dep) for prompt diff viewer.
-
-**Live preview:** optional `promptVersionOverride` field on chat API payload; log in `PromptDecision.metadata`.
+**Implemented** (found already built, status marker was stale): `PromptProfile`/`PromptVersion` models back a two-pane admin UI. `GET/POST /api/admin/prompts`, `GET/POST /api/admin/prompts/:profileKey/versions`, `POST /api/admin/prompts/:profileKey/activate`, `POST /api/admin/prompts/:profileKey/rollback` — all ADMIN-only via `requireRole`. `src/app/admin/prompts/page.tsx` — profile list + version editor, `src/lib/diff.ts` Myers diff viewer, in-page test panel that calls `POST /api/chat` with `promptVersionOverride`. `PromptVersion` also carries `variantA`/`variantB`/`abRatioA` for inline A/B testing, resolved in `resolveSystemPrompt()`. Note: the live-preview log lands in `PromptDecision` (no `metadata` column — the existing `version`/`variant` fields capture it).
 
 ---
 
-### Phase 3 — Role-Based Access Control ⬜ NOT STARTED
+### Phase 3 — Role-Based Access Control ✅ COMPLETE
 
-**Prerequisite Prisma migration:** replace `isAdmin Boolean` with `UserRole` enum (`VIEWER`, `ANALYST`, `PROMPT_EDITOR`, `ADMIN`). Migrate existing admins to `ADMIN`. Migration name: `YYYYMMDD_phase3_user_roles`.
-
-**New file:** `src/lib/rbac.ts` — `requireRole(user, minRole)` throws 403 if rank insufficient.
-
-**New routes:** `GET /api/admin/users`, `PATCH /api/admin/users/:id`.
-
-**New page:** `src/app/admin/users/page.tsx` — user table with inline role selector.
+**Implemented** (found already built, status marker was stale): `UserRole` enum (`VIEWER|ANALYST|PROMPT_EDITOR|ADMIN`) on `User`. `src/lib/rbac.ts` — `requireRole(user, minRole)` throws a 403-tagged error. `GET /api/admin/users`, `PATCH /api/admin/users/:id`, plus `PATCH /api/admin/users/:id/budget` (Phase 22). `src/app/admin/users/page.tsx` — user table with inline role selector.
 
 ---
 
@@ -205,15 +189,9 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 6 — Quality Scoring & Dataset Export ⬜ NOT STARTED
+### Phase 6 — Quality Scoring & Dataset Export ✅ COMPLETE
 
-**New BullMQ queue:** `quality-score-queue`.
-**New worker:** `src/workers/quality-score-worker.ts`.
-**New Prisma model:** `QualityScore` (linked to `ChatMessage`, `@unique` on `messageId`).
-**New lib:** `src/lib/quality-scorer.ts`.
-**New route:** `GET /api/export/dataset` — streaming JSONL/CSV export using `TransformStream`.
-**Add to `docker-compose.yml`** as a new service.
-**Add npm script** `worker:quality-score`.
+**Implemented** (found already built, status marker was stale): `quality-score-queue` (`src/lib/queue.ts`) + `src/workers/quality-score-worker.ts` score each assistant `ChatMessage` via `src/lib/quality-scorer.ts` (heuristic length/repetition/structure/refusal-penalty scoring, no LLM call) into the `QualityScore` model (`@unique` on `messageId`). `GET /api/export/dataset` streams a JSONL/CSV export via `TransformStream`. `worker:quality-score` npm script + `docker-compose.yml` service. Consumed by Phase 21's challenger-evaluation metrics.
 
 ---
 
@@ -228,9 +206,9 @@ Migration name: `YYYYMMDD_phase1_add_is_admin`.
 
 ---
 
-### Phase 8 — Rate Limiting ⬜ NOT STARTED
+### Phase 8 — Rate Limiting ✅ COMPLETE
 
-**New lib:** `src/lib/rate-limiter.ts` — sliding-window using Redis `INCR`+`EXPIRE`.
+**Implemented** (found already built, status marker was stale). **New lib:** `src/lib/rate-limiter.ts` — sliding-window using Redis `INCR`+`EXPIRE`.
 
 **Keys:** `ratelimit:{userId}:minute|hour|day`. Default limits configurable via env.
 
@@ -357,6 +335,118 @@ The system notices patterns across a user's conversation history and surfaces a 
 **UI:** dismissible toast/banner in `ChatUI.tsx`, polled via existing `refresh()` cadence; clicking an insight opens a prefilled chat turn referencing the related conversations.
 
 **New npm script:** `worker:ambient-insight`. **Add to `docker-compose.yml`** as a new service, same pattern as the quality-score worker (Phase 6).
+
+---
+
+### Phase 16 — Semantic Conversation Search ✅ COMPLETE
+
+Full-workspace natural-language search across all of a user's conversations using embeddings (spec in `FUTURE_FEATURES.md`).
+
+**Implemented (2026-07-08):** migration `20260707192126_20260707_phase16_message_embeddings` adds `MessageEmbedding` (`messageId` unique, `vector Json`, `model`, `embeddedAt`). `src/lib/rag.ts` now exports `embedText()`/`cosineSimilarity()`/`EMBEDDING_MODEL` (`"tfidf-hash-512"`) so search shares the RAG embedding function; the `model` column invalidates stale vectors on a future swap. `embedding-queue` (`getEmbeddingQueue()` in `src/lib/queue.ts`) is enqueued fire-and-forget from both `POST /api/chat` paths after the assistant message persists; `src/workers/embedding-worker.ts` embeds a conversation's un-embedded messages in batches (`EMBEDDING_BATCH_SIZE`, idempotent via `skipDuplicates`) — npm script `worker:embedding` + docker-compose service. `scripts/backfill-embeddings.mjs` backfills existing history through the queue. `src/lib/semantic-search.ts` — `searchConversations(userId, query, limit)`: in-process cosine similarity capped at the most recent `SEARCH_MAX_VECTORS` (default 5000) rows, grouped per conversation with best-matching snippet + score. `GET /api/search?q=...` — `requireSessionUser()` first, Zod-validated `q` (1–500 chars), user-scoped. `ConversationSidebar.tsx`: existing search input additionally fires a debounced (300ms) semantic search; results replace the conversation list while active with highlighted snippets; Escape clears.
+
+---
+
+### Phase 17 — Voice Mode (Speech-to-Speech Chat) ✅ COMPLETE
+
+Browser mic capture → transcription → normal chat pipeline → TTS playback of the assistant's response (spec in `FUTURE_FEATURES.md`).
+
+**Implemented (2026-07-11):** no Prisma migration (voice is just an alternate input/output path onto the existing chat pipeline). `src/lib/speech.ts` — `transcribeAudio()` picks provider via `SPEECH_STT_PROVIDER` (default: `openai` Whisper when `OPENAI_API_KEY` is set, otherwise Gemini multimodal audio input, since `GEMINI_API_KEY` is already required); `synthesizeSpeech()` uses OpenAI TTS (`SPEECH_TTS_MODEL`/`SPEECH_TTS_VOICE`, only provider currently supported). `POST /api/speech/transcribe` — `requireSessionUser()` first, `multipart/form-data` (`audio` file, optional `conversationId`), 10 MB cap, returns `{ text }`; logs via `sendLog` (fire-and-forget) only when `conversationId` is present and owned by the caller, since a voice turn often precedes conversation creation. `POST /api/speech/synthesize` — `requireSessionUser()`, Zod body `{ text: string (≤4000 chars), conversationId?: string }`, streams back `audio/mpeg`, same conditional telemetry. UI: 🎙 push-to-talk button in `ChatInput.tsx` using `MediaRecorder` (feature-detects `audio/webm;codecs=opus` → `audio/webm` → `audio/mp4`); on stop, uploads to transcribe and appends the text to the composer — never auto-sends, so the user reviews/edits first (moderation still runs server-side on send regardless). 🔊 speaker toggle in `MessageBubble.tsx` fetches and plays synthesized audio for a completed assistant response.
+
+**Note:** sentence-by-sentence TTS during SSE streaming (mentioned as an option in the spec) is out of scope for this phase — synthesis happens on-demand for the full, already-streamed response, mirroring how Phase 18 shipped tool loops sync-only before considering streaming.
+
+---
+
+### Phase 18 — Agentic Tool Use (Function Calling) ✅ COMPLETE
+
+Lets the assistant call server-defined tools mid-conversation (calculator, current time, RAG lookup, conversation summary), with a visible tool-call trace in the UI.
+
+**Implemented (2026-07-11):** migration `20260711085610_20260707_phase18_tool_calls` adds `ToolCallStatus` enum (`PENDING|SUCCESS|ERROR`) and `ToolCall` model (`messageId` FK, `toolName`, `arguments Json`, `result Json?`, `status`, `latencyMs`). `src/lib/tools/registry.ts` — typed registry with four safe built-ins: `calculator` (hand-rolled recursive-descent evaluator, no `eval`/`Function`), `current_time`, `knowledge_search` (wraps `retrieveRelevantChunks` from `src/lib/rag.ts`, scoped to the conversation), `conversation_summary`. Each entry pairs a JSON schema (sent to providers) with a zod schema (validates arguments the provider returns) — no arbitrary code execution, no shell, no unrestricted fetch. `src/lib/llm.ts` gained `runProviderWithTools()` + a provider-agnostic `ToolTurn` type, kept separate from the streaming-path `runProvider()`; implemented for Anthropic, OpenAI, Grok (OpenAI-compatible), and Gemini — Ollama is skipped (answers in plain text, no tools) since local models rarely support function calling reliably. `src/lib/tools/loop.ts` — `runToolLoop()` calls the model, validates + executes any requested tools (10s timeout each) and re-calls with results appended, up to 5 iterations, hard-falling back to a normal tool-less answer on exhaustion. `POST /api/chat` gained an opt-in zod-validated `toolsEnabled` field; when true the request always answers via the sync/JSON path (tool loops are sync-mode only) and persists one `ToolCall` row per invocation. `GET /api/messages/:messageId/tool-calls` returns a message's tool-call trace. UI: "🛠 Tools" toggle in `ChatInput.tsx`; `ToolCallCard.tsx` renders each call (name, args, collapsed result, latency) inline above the answer in `MessageBubble.tsx`, self-fetched like `CitationsBar`.
+
+**Note:** streaming + tool loops was intentionally out of scope for this phase — a `toolsEnabled` request bypasses SSE entirely (`ChatUI.sendWithTools`) rather than streaming partial tool-call state.
+
+---
+
+### Phase 19 — Scheduled Prompts & AI Digests ✅ COMPLETE
+
+Users schedule recurring prompts ("every Monday 9am, summarize my week's conversations") that run headless and appear as new conversations.
+
+**Implemented (2026-07-11):** migration `20260711091918_20260711_phase19_scheduled_prompts` adds `ScheduledPrompt` (`userId`, `cronExpression`, `prompt`, `provider`, `isActive @default(true)`, `lastRunAt`, `deliveryConversationId`). `src/lib/cron-validate.ts` — hand-rolled strict 5-field cron validator (no new dep); rejects wildcard/step/comma minute fields so the minimum interval is 1 hour. `getScheduledPromptQueue()` in `src/lib/queue.ts`; `src/lib/scheduled-prompts.ts` — `syncScheduleJob()`/`removeScheduleJob()` wrap BullMQ's `upsertJobScheduler`/`removeJobScheduler` keyed `scheduled-prompt:{id}`, using native cron `pattern` support (no hand-rolled next-run math). `src/workers/scheduled-prompt-worker.ts` runs with no session — every query is scoped to the loaded schedule's own `userId`; it builds context from the user's recent conversations, calls `callLLMWithLogging` (free telemetry + `PromptDecision`), creates the delivery conversation on first run or appends to it, and updates `lastRunAt`. `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/:id` — `requireSessionUser()` first, Zod-validated, capped at `MAX_SCHEDULES_PER_USER` (default 10, checked on create and reactivation), input moderation runs on the stored prompt. UI: `ScheduleModal.tsx` (prompt textarea, provider select, daily/weekly/monthly + time picker mapped to cron client-side, schedule list with pause/resume/delete), opened from a `ConversationSidebar.tsx` entry and the command palette.
+
+**Prerequisite Prisma migration:** add `ScheduledPrompt` model. Migration name: `20260711091918_20260711_phase19_scheduled_prompts`.
+
+**New lib:** `src/lib/cron-validate.ts`, `src/lib/scheduled-prompts.ts`.
+
+**New routes:** `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/:id`.
+
+**New worker:** `src/workers/scheduled-prompt-worker.ts`. **New npm script:** `worker:scheduled-prompt`. **Added to `docker-compose.yml`.**
+
+**UI:** `src/components/chat/ScheduleModal.tsx`; entry point in `ConversationSidebar.tsx`.
+
+---
+
+### Phase 20 — Live Collaborative Sessions ✅ COMPLETE
+
+Multiple users in the same conversation in real time — shared cursor into one chat, presence indicators, everyone sees streaming tokens live.
+
+**Implemented (2026-07-11):** migration `20260711100801_20260707_phase20_collab` adds `ConversationMemberRole` enum (`OWNER|COLLABORATOR|VIEWER`), `ConversationMember` (`conversationId`, `userId`, `role @default(COLLABORATOR)`, `@@unique([conversationId, userId])`), and `Conversation.isCollaborative @default(false)`. `src/lib/collab.ts`: `assertConversationAccess(user, conversationId, minRole)` is now the single authorization path for every conversation-scoped route — the conversation's creator (`conversation.userId`) is always treated as `OWNER` rank even without an explicit `ConversationMember` row; invited collaborators get one. `collabErrorResponse(error)` is the shared 401/403/404 catch-block mapping every refactored route uses. `publishConversationEvent`/`conversationChannel` publish over Redis (`PUBLISH collab:{id}`, reusing `REDIS_URL` — no new dependency); `acquireSendLock`/`releaseSendLock` wrap `POST /api/chat` in a `SET NX EX` lock so only one member can have an in-flight send per collaborative conversation (30s TTL safety net, released explicitly on completion/abort/error). `createSubscriberConnection()` opens a dedicated `ioredis` connection per SSE request (`SUBSCRIBE` can't share the cached publish/lock connection).
+
+**Centralized authorization refactor:** every route that used to check `conversation.userId === user.id` (or a nested `conversation: { userId }` check) inline now calls `assertConversationAccess` with a role appropriate to the action — `VIEWER` for reads, `COLLABORATOR` for sends/mutations, `OWNER` for delete/share/invite. This closed a pre-existing gap: `POST /api/conversations/:id/cancel` had **no** authentication at all before this phase. `GET /api/conversations` now includes conversations the caller is a member of (not just owner), plus a computed `myRole` field per conversation.
+
+**New routes:** `GET /api/conversations/:id/events` — `requireSessionUser()` + `VIEWER` membership; long-lived SSE response subscribed to the conversation's Redis channel (dedicated subscriber connection, cleaned up on `req.signal` abort); emits `message_created`, `token`, `thought`, and a `presence` heartbeat every 20s. `POST /api/conversations/:id/members` (`OWNER` only, invite by email — creates/updates a `ConversationMember` row and flips `isCollaborative` on), `GET .../members`, `DELETE .../members/:userId` (self-leave, or `OWNER` removing anyone).
+
+**Chat route integration:** `POST /api/chat` mirrors every SSE `token`/`thought` frame and the persisted user/assistant `ChatMessage` rows to `publishConversationEvent` when `conversation.isCollaborative`, gated behind the send lock described above.
+
+**UI:** presence avatar row + "Invite collaborator" button in `ChatUI.tsx`'s chat header, shown for collaborative conversations (owner/collaborator only for the invite button); a `useEffect` opens an `EventSource` against `/api/conversations/:id/events` for the active conversation when collaborative, merging `presence` events into local state and re-`refresh()`-ing on `message_created` (no Context provider — state stays lifted in `ChatUI` as with every other phase). `ChatInput` is disabled when the caller's `myRole` on the active conversation is `VIEWER`.
+
+**Gotcha:** serverless deployments kill long-lived SSE connections; the events subscription doesn't yet implement `Last-Event-ID` client reconnection (documented in `docs/architecture-notes.md`).
+
+---
+
+### Phase 21 — Prompt Optimization Lab (Auto A/B Evolution) ✅ COMPLETE
+
+Closes the loop between Phase 2 (Prompt Studio) and Phase 4/6 (annotations + quality scores): the system auto-generates a challenger prompt version, A/B tests it against the champion on live traffic, and evaluates it for promotion.
+
+**Implemented (2026-07-11):** migration `20260711102527_phase21_prompt_experiments` adds `PromptExperimentStatus` enum (`RUNNING|CONCLUDED_CHAMPION|CONCLUDED_CHALLENGER|ABORTED`) and `PromptExperiment` (`profileKey`, `championVersionId`/`challengerVersionId` → `PromptVersion`, `trafficSplit Float @default(0.1)`, `status`, `minSamples Int @default(100)`, `autoPromote Boolean @default(false)`, `metrics Json?`). `src/lib/prompt-lab.ts`: `pickArmForRequest(experimentId, seed, trafficSplit)` is a deterministic `sha256(experimentId + seed)` hash bucket so a user/conversation stays in one arm for the experiment's lifetime; `evaluateExperiment(experimentId)` aggregates per-arm `MessageAnnotation` thumbs ratio, `QualityScore` mean, and `SafetyAuditLog` refusal rate into a composite success rate and runs a hand-rolled two-proportion z-test (p<0.05, no new dependency) once both arms reach `minSamples`; `generateChallenger(profileKey)` meta-prompts the configured LLM via `callLLMWithLogging` to mutate the champion's base prompt into a new inactive `PromptVersion`. `resolveSystemPrompt()` (`src/lib/prompt-manager.ts`) gained an optional `userId` param — when a profile has a `RUNNING` experiment and the caller didn't pass an explicit `versionOverride`, the request is bucketed into the champion or challenger `PromptVersion` instead of `profile.activeVersion`; the experiment arm is recoverable from the existing `PromptDecision.version` field, so no schema change was needed on that hot-path table. `POST /api/chat` passes `userId: user.id` through.
+
+**New BullMQ queue:** `prompt-lab-queue` (`src/lib/queue.ts`). **New worker:** `src/workers/prompt-lab-worker.ts` — repeatable hourly `scan` job (`PROMPT_LAB_INTERVAL_MINUTES`) fans out an `evaluate` job per `RUNNING` experiment; on a significant, sufficiently-sampled result it concludes the experiment and, only if `autoPromote` is set, activates the challenger version on the profile — default behavior is "conclude and leave for the admin to activate manually."
+
+**New routes (ADMIN):** `GET/POST /api/admin/experiments` (`GET` includes live, unpersisted metrics for `RUNNING` experiments; `POST` takes either an explicit `challengerVersionId` or `generateChallenger: true`, caps `trafficSplit` at 0.5 in the Zod schema, and rejects a second `RUNNING` experiment per profile with 409), `POST /api/admin/experiments/:id/abort`.
+
+**UI:** "Lab" tab next to "Studio" in `src/app/admin/prompts/page.tsx` — experiment table with live arm success rates + z-score significance indicator, "Generate challenger with AI & start" button, abort button.
+
+**Note:** Phase 2 and Phase 6 were both already fully implemented in the codebase ahead of their stale `⬜ NOT STARTED` markers in this file (now corrected above) — no prerequisite work was needed before starting this phase.
+
+---
+
+### Phase 23 — Conversation Intelligence Reports ✅ COMPLETE
+
+One-click "analyze this conversation": an LLM-generated structured report (topics, sentiment arc, unresolved questions, action items) rendered as a slide-over panel and exportable as Markdown.
+
+**Implemented (2026-07-11):** migration `20260711075037_20260711_phase23_reports` adds `ConversationReport` (`conversationId` unique, `report Json`, `model`, `generatedAt`, `messageCountAtGeneration`). `src/lib/conversation-report.ts`: `generateReport(conversationId, userId)` pulls messages (ownership-checked), map-reduces (chunk-summarize via `callLLMWithLogging`) transcripts over `MAX_TRANSCRIPT_CHARS` (12k), then a JSON-output LLM pass Zod-validated against `{ summary, topics[], sentimentArc[], actionItems[], unresolvedQuestions[] }` with one repair-retry on parse/validation failure; output moderation runs on the summary (`SafetyAuditLog` row written for both allowed/blocked); whole pass capped at 30s. Cache hit when `messageCountAtGeneration` matches the current message count — returns without calling the LLM. `POST /api/conversations/:id/report` (generate-or-cached) and `GET /api/conversations/:id/report` (latest only), both `requireSessionUser()` first. UI: "Analyze" in the conversation context menu and command palette → `ReportPanel.tsx` slide-over (summary, topic chips, sentiment sparkline via inline SVG, action-item checklist, unresolved questions, "Copy as Markdown", loading skeleton).
+
+**Prerequisite Prisma migration:** add `ConversationReport` model (`conversationId`, `report Json`, `model String`, `generatedAt DateTime`, `messageCountAtGeneration Int`). Migration name: `20260711075037_20260711_phase23_reports`.
+
+**New lib:** `src/lib/conversation-report.ts`.
+
+**New route:** `POST/GET /api/conversations/:id/report`.
+
+**UI:** `src/components/chat/ReportPanel.tsx`; "Analyze" menu item in `ConversationSidebar.tsx`.
+
+---
+
+### Phase 22 — Cost Guardrails & Budgets ✅ COMPLETE
+
+Hard monthly spend budgets per user with soft warnings, hard cutoffs, and automatic downgrade to a cheap model at the limit (spec in `FUTURE_FEATURES.md`).
+
+**Implemented (2026-07-11):** migration `20260711072750_20260711_phase22_budgets` adds `BudgetAction` enum (`WARN|DOWNGRADE|BLOCK`), `User.monthlyBudgetUsd Float?` / `User.budgetAction @default(WARN)`, and `SpendCache` (`@@unique([userId, month])`, month keyed `"YYYY-MM"` — rollover automatic, no cron). `src/lib/budget.ts`: `recordSpend()` (cost via `src/lib/cost.ts`; upsert-increments `SpendCache` then `SET`s the authoritative DB total into Redis `spend:{userId}:{month}` so the cache can never drift), `checkBudget()` (Redis-first, DB fallback with write-back; warning at 80%), `downgradeProvider()` (`BUDGET_FALLBACK_PROVIDER`/`BUDGET_FALLBACK_MODEL` env). Spend recording happens in the **ingest worker** (success logs with token counts only; userId resolved via the conversation) — never in the request path. `POST /api/chat` checks the budget after auth + rate limiting: BLOCK → 402; DOWNGRADE → `providerOverride`/`modelOverride` passed to the LLM call (new pass-through params on `callLLMWithLogging`/`streamLLMWithLogging`/`executeWithFailover`) + `x-budget-downgraded: true` response header; warning → `x-budget-warning` header. Routes: `GET /api/budget` (own status), `PATCH /api/admin/users/:id/budget` (ADMIN, Zod: positive ≤ 10000 or null, `budgetAction`). UI: usage meter atop `ConversationSidebar.tsx` (yellow ≥80%, red ≥100%; budget fetched in `ChatUI.refresh()`), red banner + disabled input when blocked, dismissible notice when a response carries the downgrade header.
+
+---
+
+### Phase 24 — Workspace Command Palette (⌘K) ✅ COMPLETE
+
+Global keyboard-driven palette: jump to conversations, trigger actions, fuzzy-matched and fully keyboard navigable (spec in `FUTURE_FEATURES.md`).
+
+**Implemented (2026-07-08):** no migration, no new dependencies. `src/lib/fuzzy.ts` — hand-rolled subsequence fuzzy matcher (`fuzzyMatch`/`fuzzyFilter`, scores word starts + consecutive runs, returns match indices for highlighting). `src/components/chat/CommandPalette.tsx` — modal overlay rendered by `ChatUI.tsx` when `paletteOpen`; registry = static actions built from existing `ChatUI` callbacks (new conversation, race-mode toggle, per-provider race chips, show/hide archived, share/replay/archive of the active conversation) + the conversation list from props. `>` prefix filters to actions, `#` to conversations; a debounced (300ms) async "Semantic matches" section calls Phase 16's `GET /api/search` and degrades gracefully on failure. `ChatUI.tsx` registers one global `keydown` listener for the `⌘/Ctrl+K` toggle only (textarea keys otherwise untouched); the palette handles arrows/Enter/Escape itself, traps Tab, autofocuses its input, and restores focus on close.
 
 ---
 

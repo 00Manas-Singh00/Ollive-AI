@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { validateWidgetResponse } from "@/lib/generative-ui";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 type Params = { params: Promise<{ messageId: string }> };
 
@@ -13,12 +14,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const user = await requireSessionUser();
     const { messageId } = await params;
 
-    // Ownership check: the message must belong to a conversation owned by the user.
-    const message = await prisma.chatMessage.findFirst({
-      where: { id: messageId, conversation: { userId: user.id } },
-      select: { id: true, widgetInteraction: true },
+    const message = await prisma.chatMessage.findUnique({
+      where: { id: messageId },
+      select: { conversationId: true, widgetInteraction: true },
     });
     if (!message?.widgetInteraction) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    await assertConversationAccess(user, message.conversationId, "COLLABORATOR");
 
     const body = PatchSchema.safeParse(await req.json());
     if (!body.success) return NextResponse.json({ error: "userResponse is required" }, { status: 400 });
@@ -33,8 +34,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     return NextResponse.json(updated);
   } catch (error) {
+    const known = collabErrorResponse(error);
+    if (known) return known;
     const msg = error instanceof Error ? error.message : "Error";
-    if (msg === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

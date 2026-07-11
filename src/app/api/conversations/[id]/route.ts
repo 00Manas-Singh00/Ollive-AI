@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSessionUser } from "@/lib/auth";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,8 +12,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const folder = typeof body.folder === "string" ? body.folder.trim() : body.folder === null ? null : undefined;
     const tags = Array.isArray(body.tags) ? body.tags.map((tag: unknown) => (typeof tag === "string" ? tag.trim() : "")).filter(Boolean).slice(0, 20) : undefined;
 
-    const existing = await prisma.conversation.findFirst({ where: { id, userId: user.id } });
-    if (!existing) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+    await assertConversationAccess(user, id, "COLLABORATOR");
 
     const conversation = await prisma.conversation.update({
       where: { id },
@@ -27,7 +27,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     return NextResponse.json({ conversation });
   } catch (error) {
-    if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const known = collabErrorResponse(error);
+    if (known) return known;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed" }, { status: 500 });
   }
 }
@@ -36,8 +37,8 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
   try {
     const user = await requireSessionUser();
     const { id } = await params;
-    const existing = await prisma.conversation.findFirst({ where: { id, userId: user.id } });
-    if (!existing) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+    // Deleting a shared conversation is an owner-only action.
+    await assertConversationAccess(user, id, "OWNER");
     await prisma.$transaction([
       // Messages in other conversations may reference this conversation's messages as their
       // branch point (Phase 12); the self-FK is NoAction, so detach them before deleting.
@@ -49,7 +50,8 @@ export async function DELETE(_: NextRequest, { params }: { params: Promise<{ id:
     ]);
     return NextResponse.json({ ok: true });
   } catch (error) {
-    if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const known = collabErrorResponse(error);
+    if (known) return known;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed" }, { status: 500 });
   }
 }

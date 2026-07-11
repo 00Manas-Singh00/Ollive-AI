@@ -1,6 +1,7 @@
 import { requireSessionUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 type Params = { params: Promise<{ messageId: string }> };
 
@@ -9,12 +10,12 @@ export async function GET(req: NextRequest, { params }: Params) {
     const user = await requireSessionUser();
     const { messageId } = await params;
 
-    // Ownership check: the message must belong to a conversation owned by the user.
-    const message = await prisma.chatMessage.findFirst({
-      where: { id: messageId, conversation: { userId: user.id } },
-      select: { id: true },
+    const message = await prisma.chatMessage.findUnique({
+      where: { id: messageId },
+      select: { conversationId: true },
     });
     if (!message) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    await assertConversationAccess(user, message.conversationId, "VIEWER");
 
     const citations = await prisma.messageCitation.findMany({
       where: { messageId },
@@ -45,8 +46,9 @@ export async function GET(req: NextRequest, { params }: Params) {
       })),
     );
   } catch (error) {
+    const known = collabErrorResponse(error);
+    if (known) return known;
     const msg = error instanceof Error ? error.message : "Error";
-    if (msg === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

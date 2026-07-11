@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { retrieveRelevantChunks } from "@/lib/rag";
+import { getRunningExperiment, pickArmForRequest } from "@/lib/prompt-lab";
 
 type ModelOverrides = Record<string, string>;
 
@@ -39,11 +40,24 @@ export async function ensureDefaultPromptProfile() {
   return profile;
 }
 
-export async function resolveSystemPrompt(params: { conversationId: string; model?: string; versionOverride?: number; ragQuery?: string; profileKey?: string }) {
+export async function resolveSystemPrompt(params: { conversationId: string; userId?: string; model?: string; versionOverride?: number; ragQuery?: string; profileKey?: string }) {
   const profile = params.profileKey
     ? (await prisma.promptProfile.findUnique({ where: { key: params.profileKey } })) ?? (await ensureDefaultPromptProfile())
     : await ensureDefaultPromptProfile();
-  const activeVersion = params.versionOverride ?? profile.activeVersion ?? 1;
+
+  let activeVersion = params.versionOverride ?? profile.activeVersion ?? 1;
+
+  // A running A/B experiment overrides the profile's active version for a deterministic
+  // slice of traffic, unless the caller explicitly pinned a version (e.g. Prompt Studio's
+  // test panel or a replay override).
+  if (!params.versionOverride) {
+    const experiment = await getRunningExperiment(profile.key);
+    if (experiment) {
+      const arm = pickArmForRequest(experiment.id, params.userId ?? params.conversationId, experiment.trafficSplit);
+      activeVersion = arm === "challenger" ? experiment.challengerVersion.version : experiment.championVersion.version;
+    }
+  }
+
   const version = await prisma.promptVersion.findFirst({ where: { profileId: profile.id, version: activeVersion } });
   if (!version) throw new Error(`Prompt version ${activeVersion} not found for profile ${profile.key}`);
 

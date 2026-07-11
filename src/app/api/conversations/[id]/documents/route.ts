@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSessionUser } from "@/lib/auth";
 import { ingestDocument } from "@/lib/rag";
 import { z } from "zod";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2 MB
 
@@ -11,8 +12,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const user = await requireSessionUser();
     const { id: conversationId } = await params;
 
-    const conversation = await prisma.conversation.findFirst({ where: { id: conversationId, userId: user.id } });
-    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+    await assertConversationAccess(user, conversationId, "COLLABORATOR");
 
     const formData = await req.formData();
     const file = formData.get("file");
@@ -26,7 +26,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ documentId }, { status: 201 });
   } catch (error) {
-    if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const known = collabErrorResponse(error);
+    if (known) return known;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed" }, { status: 500 });
   }
 }
@@ -36,8 +37,7 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
     const user = await requireSessionUser();
     const { id: conversationId } = await params;
 
-    const conversation = await prisma.conversation.findFirst({ where: { id: conversationId, userId: user.id } });
-    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+    await assertConversationAccess(user, conversationId, "VIEWER");
 
     const documents = await prisma.knowledgeDocument.findMany({
       where: { conversationId },
@@ -47,7 +47,8 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
 
     return NextResponse.json({ documents });
   } catch (error) {
-    if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const known = collabErrorResponse(error);
+    if (known) return known;
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed" }, { status: 500 });
   }
 }

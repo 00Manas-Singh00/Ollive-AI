@@ -92,7 +92,7 @@ function providerOrder(policy: RoutingPolicy): ProviderName[] {
   return [manual, ...all.filter((p) => p !== manual)];
 }
 
-function getProviderPlan(providerOverride?: ProviderName): ProviderName[] {
+export function getProviderPlan(providerOverride?: ProviderName): ProviderName[] {
   const configured = new Set(configuredProviders());
   if (providerOverride) {
     if (!configured.has(providerOverride)) throw new Error(`Provider ${providerOverride} is not configured`);
@@ -131,13 +131,14 @@ async function executeWithFailover(params: {
   onThought?: (thought: string) => void;
   isAborted?: () => boolean;
   providerOverride?: ProviderName;
+  modelOverride?: string;
 }): Promise<{ provider: ProviderName; model: string; response: ProviderResponse }> {
   const plan = getProviderPlan(params.providerOverride);
   let lastError: unknown;
 
   for (let i = 0; i < plan.length; i += 1) {
     const provider = plan[i];
-    const model = providerModel(provider);
+    const model = (params.providerOverride && params.modelOverride) || providerModel(provider);
     try {
       const response = await runProvider({ provider, model, ...params });
       return { provider, model, response };
@@ -250,6 +251,7 @@ export async function callLLMWithLogging(params: {
   conversationId: string;
   messages: LLMMessage[];
   providerOverride?: ProviderName;
+  modelOverride?: string;
 }): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
@@ -260,6 +262,7 @@ export async function callLLMWithLogging(params: {
       conversationId: params.conversationId,
       messages: params.messages,
       providerOverride: params.providerOverride,
+      modelOverride: params.modelOverride,
     });
     const responseTs = new Date();
 
@@ -304,6 +307,8 @@ export async function streamLLMWithLogging(params: {
   onToken: (token: string) => void;
   onThought?: (thought: string) => void;
   isAborted?: () => boolean;
+  providerOverride?: ProviderName;
+  modelOverride?: string;
 }): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
@@ -316,6 +321,8 @@ export async function streamLLMWithLogging(params: {
       onToken: params.onToken,
       onThought: params.onThought,
       isAborted: params.isAborted,
+      providerOverride: params.providerOverride,
+      modelOverride: params.modelOverride,
     });
 
     const responseTs = new Date();
@@ -645,6 +652,237 @@ async function streamAnthropic(params: {
     completionTokens: outputTokens,
     totalTokens: inputTokens + outputTokens,
   };
+}
+
+// --- Phase 18: Agentic Tool Use (Function Calling) ---
+// A provider-agnostic single-round call used by src/lib/tools/loop.ts. Kept
+// separate from runProvider (which the streaming chat path uses) so existing
+// callers are untouched — tool loops are sync-mode only.
+
+export type ToolDefinitionForProvider = { name: string; description: string; parameters: Record<string, unknown> };
+export type ToolCallRequest = { id: string; name: string; arguments: unknown };
+export type ToolTurn =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls?: ToolCallRequest[] }
+  | { role: "tool"; toolCallId: string; name: string; content: string };
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+export async function runProviderWithTools(params: {
+  provider: ProviderName;
+  model: string;
+  turns: ToolTurn[];
+  tools: ToolDefinitionForProvider[];
+}): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (params.provider === "anthropic") return callAnthropicWithTools(params);
+  if (params.provider === "openai") return callOpenAIWithTools(params);
+  if (params.provider === "grok") return callGrokWithTools(params);
+  if (params.provider === "gemini") return callGeminiWithTools(params);
+  // Ollama models rarely support function calling reliably — answer in plain text.
+  const plain = await callOllama({ model: params.model, messages: turnsToPlainMessages(params.turns) });
+  return { content: plain.output, toolCalls: [] };
+}
+
+function turnsToPlainMessages(turns: ToolTurn[]): LLMMessage[] {
+  return turns.filter((t) => t.role !== "tool").map((t) => ({ role: t.role, content: t.content }));
+}
+
+async function callAnthropicWithTools(params: {
+  model: string;
+  turns: ToolTurn[];
+  tools: ToolDefinitionForProvider[];
+}): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
+  const client = anthropicClient();
+  const systemParts: string[] = [];
+  const messages: Anthropic.MessageParam[] = [];
+  let toolResultAccum: Anthropic.ToolResultBlockParam[] = [];
+
+  const flushToolAccum = () => {
+    if (toolResultAccum.length) {
+      messages.push({ role: "user", content: toolResultAccum });
+      toolResultAccum = [];
+    }
+  };
+
+  for (const t of params.turns) {
+    if (t.role === "tool") {
+      toolResultAccum.push({ type: "tool_result", tool_use_id: t.toolCallId, content: t.content });
+      continue;
+    }
+    flushToolAccum();
+    if (t.role === "system") { systemParts.push(t.content); continue; }
+    if (t.role === "user") { messages.push({ role: "user", content: t.content }); continue; }
+    const blocks: Anthropic.ContentBlockParam[] = [];
+    if (t.content) blocks.push({ type: "text", text: t.content });
+    for (const call of t.toolCalls ?? []) {
+      blocks.push({ type: "tool_use", id: call.id, name: call.name, input: (call.arguments ?? {}) as Record<string, unknown> });
+    }
+    messages.push({ role: "assistant", content: blocks });
+  }
+  flushToolAccum();
+
+  const res = await client.messages.create({
+    model: params.model,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    ...(systemParts.length ? { system: systemParts.join("\n\n") } : {}),
+    messages,
+    ...(params.tools.length
+      ? { tools: params.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as Anthropic.Tool.InputSchema })) }
+      : {}),
+  });
+
+  const content = res.content.filter((b) => b.type === "text").map((b) => (b as Anthropic.TextBlock).text).join("");
+  const toolCalls: ToolCallRequest[] = res.content
+    .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+    .map((b) => ({ id: b.id, name: b.name, arguments: b.input }));
+
+  return { content, toolCalls };
+}
+
+function turnsToOpenAIMessages(turns: ToolTurn[]): OpenAI.Chat.ChatCompletionMessageParam[] {
+  return turns.map((t): OpenAI.Chat.ChatCompletionMessageParam => {
+    if (t.role === "assistant") {
+      return {
+        role: "assistant",
+        content: t.content || null,
+        ...(t.toolCalls?.length
+          ? { tool_calls: t.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments ?? {}) } })) }
+          : {}),
+      };
+    }
+    if (t.role === "tool") {
+      return { role: "tool", tool_call_id: t.toolCallId, content: t.content };
+    }
+    return { role: t.role, content: t.content };
+  });
+}
+
+async function callOpenAIWithTools(params: {
+  model: string;
+  turns: ToolTurn[];
+  tools: ToolDefinitionForProvider[];
+}): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient();
+  const res = await client.chat.completions.create({
+    model: params.model,
+    messages: turnsToOpenAIMessages(params.turns),
+    temperature: 0.9,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    ...(params.tools.length
+      ? {
+          tools: params.tools.map((t) => ({ type: "function" as const, function: { name: t.name, description: t.description, parameters: t.parameters } })),
+          tool_choice: "auto" as const,
+        }
+      : {}),
+  });
+  const msg = res.choices[0]?.message;
+  const toolCalls: ToolCallRequest[] = (msg?.tool_calls ?? [])
+    .filter((tc): tc is OpenAI.Chat.ChatCompletionMessageFunctionToolCall => tc.type === "function")
+    .map((tc) => ({ id: tc.id, name: tc.function.name, arguments: safeJsonParse(tc.function.arguments) }));
+
+  return { content: msg?.content || "", toolCalls };
+}
+
+async function callGrokWithTools(params: {
+  model: string;
+  turns: ToolTurn[];
+  tools: ToolDefinitionForProvider[];
+}): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (!process.env.GROK_API_KEY) throw new Error("GROK_API_KEY is not configured");
+  const response = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.GROK_API_KEY}` },
+    body: JSON.stringify({
+      model: params.model,
+      messages: turnsToOpenAIMessages(params.turns),
+      temperature: 0.9,
+      max_tokens: MAX_OUTPUT_TOKENS,
+      ...(params.tools.length
+        ? {
+            tools: params.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
+            tool_choice: "auto",
+          }
+        : {}),
+    }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Grok API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const msg = data?.choices?.[0]?.message;
+  const toolCalls: ToolCallRequest[] = (msg?.tool_calls ?? []).map((tc: { id: string; function: { name: string; arguments: string } }) => ({
+    id: tc.id,
+    name: tc.function.name,
+    arguments: safeJsonParse(tc.function.arguments),
+  }));
+
+  return { content: msg?.content || "", toolCalls };
+}
+
+type GeminiContentPart = { text?: string; functionCall?: { name: string; args?: Record<string, unknown> }; functionResponse?: { name: string; response: Record<string, unknown> } };
+
+function turnsToGeminiContents(turns: ToolTurn[]): { contents: Array<{ role: string; parts: GeminiContentPart[] }>; systemInstruction?: string } {
+  const systemParts: string[] = [];
+  const contents: Array<{ role: string; parts: GeminiContentPart[] }> = [];
+
+  for (const t of turns) {
+    if (t.role === "system") { systemParts.push(t.content); continue; }
+    if (t.role === "user") { contents.push({ role: "user", parts: [{ text: t.content }] }); continue; }
+    if (t.role === "assistant") {
+      const parts: GeminiContentPart[] = [];
+      if (t.content) parts.push({ text: t.content });
+      for (const call of t.toolCalls ?? []) parts.push({ functionCall: { name: call.name, args: (call.arguments ?? {}) as Record<string, unknown> } });
+      contents.push({ role: "model", parts });
+      continue;
+    }
+    contents.push({ role: "function", parts: [{ functionResponse: { name: t.name, response: { content: safeJsonParse(t.content) } } }] });
+  }
+
+  return { contents, systemInstruction: systemParts.length ? systemParts.join("\n\n") : undefined };
+}
+
+async function callGeminiWithTools(params: {
+  model: string;
+  turns: ToolTurn[];
+  tools: ToolDefinitionForProvider[];
+}): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
+  const { contents, systemInstruction } = turnsToGeminiContents(params.turns);
+
+  const response = await geminiClient.models.generateContent({
+    model: params.model,
+    contents,
+    config: {
+      temperature: 0.9,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET },
+      ...(systemInstruction ? { systemInstruction } : {}),
+      ...(params.tools.length
+        ? { tools: [{ functionDeclarations: params.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }] }
+        : {}),
+    },
+  });
+
+  const candidateParts = (response.candidates?.[0]?.content?.parts ?? []) as GeminiContentPart[];
+  const content = candidateParts.filter((p) => p.text).map((p) => p.text as string).join("");
+  const toolCalls: ToolCallRequest[] = candidateParts
+    .filter((p) => p.functionCall)
+    .map((p, i) => ({ id: `${p.functionCall!.name}-${i}-${Date.now()}`, name: p.functionCall!.name, arguments: p.functionCall!.args ?? {} }));
+
+  return { content, toolCalls };
 }
 
 async function callOllama(params: { model: string; messages: LLMMessage[] }): Promise<ProviderResponse> {

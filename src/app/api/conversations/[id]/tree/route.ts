@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSessionUser } from "@/lib/auth";
+import { assertConversationAccess, collabErrorResponse } from "@/lib/collab";
 
 type ReplayMeta = {
   mode?: string;
@@ -13,8 +14,7 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
     const user = await requireSessionUser();
     const { id } = await params;
 
-    const conversation = await prisma.conversation.findFirst({ where: { id, userId: user.id } });
-    if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
+    const { conversation } = await assertConversationAccess(user, id, "VIEWER");
 
     const rootId = conversation.rootConversationId ?? conversation.id;
 

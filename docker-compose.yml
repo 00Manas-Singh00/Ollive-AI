@@ -23,3 +23,27 @@ services:
       - .env
     volumes:
       - ./prisma:/app/prisma
+
+  embedding-worker:
+    build: .
+    command: npm run worker:embedding
+    env_file:
+      - .env
+    volumes:
+      - ./prisma:/app/prisma
+
+  scheduled-prompt-worker:
+    build: .
+    command: npm run worker:scheduled-prompt
+    env_file:
+      - .env
+    volumes:
+      - ./prisma:/app/prisma
+
+  prompt-lab-worker:
+    build: .
+    command: npm run worker:prompt-lab
+    env_file:
+      - .env
+    volumes:
+      - ./prisma:/app/prisma
