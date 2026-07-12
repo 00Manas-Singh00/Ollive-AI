@@ -38,21 +38,57 @@ function emptyStats(): ArmStats {
   return { total: 0, thumbsUp: 0, thumbsDown: 0, qualitySum: 0, qualityCount: 0, refusals: 0 };
 }
 
+// Was previously one findFirst(ChatMessage) + one findFirst(SafetyAuditLog) per decision
+// (N+1 on experiment traffic). Now two grouped queries total: all candidate assistant
+// messages for the involved conversations in one findMany, and blocked-output counts per
+// conversation in one groupBy — decisions are paired against both in-process.
 async function collectArmStats(profileKey: string, version: number, since: Date): Promise<ArmStats> {
   const decisions = await prisma.promptDecision.findMany({
     where: { profileKey, version, createdAt: { gte: since } },
     select: { conversationId: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
   });
 
   const stats = emptyStats();
+  if (decisions.length === 0) return stats;
 
+  const conversationIds = [...new Set(decisions.map((d) => d.conversationId))];
+
+  const messages = await prisma.chatMessage.findMany({
+    where: { conversationId: { in: conversationIds }, role: "assistant", createdAt: { gte: since } },
+    orderBy: { createdAt: "asc" },
+    include: { qualityScore: true, annotations: true },
+  });
+
+  const refusalCounts = await prisma.safetyAuditLog.groupBy({
+    by: ["conversationId"],
+    where: { conversationId: { in: conversationIds }, phase: "output", action: "blocked", createdAt: { gte: since } },
+    _count: { _all: true },
+  });
+  const refusalCountByConv = new Map(refusalCounts.map((r) => [r.conversationId, r._count._all]));
+
+  const messagesByConv = new Map<string, typeof messages>();
+  for (const m of messages) {
+    const list = messagesByConv.get(m.conversationId);
+    if (list) list.push(m);
+    else messagesByConv.set(m.conversationId, [m]);
+  }
+
+  const decisionCountByConv = new Map<string, number>();
+  for (const d of decisions) decisionCountByConv.set(d.conversationId, (decisionCountByConv.get(d.conversationId) ?? 0) + 1);
+
+  // Two-pointer per conversation: decisions and messages are both asc-sorted, and each
+  // decision's turn produces the next assistant message chronologically after it —
+  // mirrors the original per-decision findFirst(createdAt >= decision.createdAt) pairing.
+  const cursorByConv = new Map<string, number>();
   for (const decision of decisions) {
-    const assistantMessage = await prisma.chatMessage.findFirst({
-      where: { conversationId: decision.conversationId, role: "assistant", createdAt: { gte: decision.createdAt } },
-      orderBy: { createdAt: "asc" },
-      include: { qualityScore: true, annotations: true },
-    });
+    const candidates = messagesByConv.get(decision.conversationId);
+    if (!candidates) continue;
+    let cursor = cursorByConv.get(decision.conversationId) ?? 0;
+    while (cursor < candidates.length && candidates[cursor].createdAt < decision.createdAt) cursor += 1;
+    const assistantMessage = candidates[cursor];
     if (!assistantMessage) continue;
+    cursorByConv.set(decision.conversationId, cursor + 1);
 
     stats.total += 1;
     for (const annotation of assistantMessage.annotations) {
@@ -63,12 +99,15 @@ async function collectArmStats(profileKey: string, version: number, since: Date)
       stats.qualitySum += assistantMessage.qualityScore.score;
       stats.qualityCount += 1;
     }
+  }
 
-    const refusal = await prisma.safetyAuditLog.findFirst({
-      where: { conversationId: decision.conversationId, phase: "output", action: "blocked", createdAt: { gte: decision.createdAt } },
-      select: { id: true },
-    });
-    if (refusal) stats.refusals += 1;
+  // Refusals aren't paired 1:1 with a specific decision by the groupBy — approximate by
+  // attributing up to one refusal per decision in that conversation (never more than the
+  // conversation's actual blocked-output count).
+  for (const conversationId of conversationIds) {
+    const refusalCount = refusalCountByConv.get(conversationId) ?? 0;
+    const decisionCount = decisionCountByConv.get(conversationId) ?? 0;
+    stats.refusals += Math.min(refusalCount, decisionCount);
   }
 
   return stats;

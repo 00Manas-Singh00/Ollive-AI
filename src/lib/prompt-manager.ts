@@ -46,6 +46,7 @@ export async function resolveSystemPrompt(params: { conversationId: string; user
     : await ensureDefaultPromptProfile();
 
   let activeVersion = params.versionOverride ?? profile.activeVersion ?? 1;
+  let experimentRunning = false;
 
   // A running A/B experiment overrides the profile's active version for a deterministic
   // slice of traffic, unless the caller explicitly pinned a version (e.g. Prompt Studio's
@@ -53,6 +54,7 @@ export async function resolveSystemPrompt(params: { conversationId: string; user
   if (!params.versionOverride) {
     const experiment = await getRunningExperiment(profile.key);
     if (experiment) {
+      experimentRunning = true;
       const arm = pickArmForRequest(experiment.id, params.userId ?? params.conversationId, experiment.trafficSplit);
       activeVersion = arm === "challenger" ? experiment.challengerVersion.version : experiment.championVersion.version;
     }
@@ -79,16 +81,22 @@ export async function resolveSystemPrompt(params: { conversationId: string; user
     resolvedPrompt += `\n\n## Context\n${ragChunks.map((c) => c.text).join("\n\n---\n\n")}`;
   }
 
-  await prisma.promptDecision.create({
-    data: {
-      conversationId: params.conversationId,
-      profileKey: profile.key,
-      version: version.version,
-      variant,
-      model: params.versionOverride ? `${params.model ?? ""}|override:v${params.versionOverride}` : params.model,
-      resolvedPrompt,
-    },
-  });
+  // PromptDecision is only useful for reconstructing which arm a request landed in — that's
+  // only ambiguous (and only worth a row) when an experiment is actually bucketing traffic,
+  // or when the caller pinned a specific version. Every other request resolves deterministically
+  // from profile.activeVersion, so a row would just be write-amplification with no signal.
+  if (experimentRunning || params.versionOverride) {
+    await prisma.promptDecision.create({
+      data: {
+        conversationId: params.conversationId,
+        profileKey: profile.key,
+        version: version.version,
+        variant,
+        model: params.versionOverride ? `${params.model ?? ""}|override:v${params.versionOverride}` : params.model,
+        resolvedPrompt,
+      },
+    });
+  }
 
   return { profileKey: profile.key, version: version.version, variant, prompt: resolvedPrompt, ragChunks };
 }

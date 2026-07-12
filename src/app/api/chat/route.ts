@@ -170,20 +170,24 @@ export async function POST(req: NextRequest) {
     if (isStreaming && !toolsEnabled) {
       let aborted = false;
       const encoder = new TextEncoder();
+      // One id for the whole in-flight assistant turn — collaborators correlate live
+      // token/thought events to the eventual persisted message via this id (previously
+      // these events carried conversationId, which isn't a message id at all).
+      const pendingMessageId = randomUUID();
 
       const stream = new ReadableStream({
         async start(controller) {
-          const send = (data: string) => {
-            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-            if (isCollaborative && data !== "[DONE]") {
-              const parsed = JSON.parse(data) as { token?: string; thought?: string };
-              if (typeof parsed.token === "string") {
-                void publishConversationEvent(conversationId, { type: "token", messageId: conversationId, token: parsed.token });
-              } else if (typeof parsed.thought === "string") {
-                void publishConversationEvent(conversationId, { type: "thought", messageId: conversationId, thought: parsed.thought });
+          const send = (data: Record<string, unknown>) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+            if (isCollaborative) {
+              if (typeof data.token === "string") {
+                void publishConversationEvent(conversationId, { type: "token", messageId: pendingMessageId, token: data.token });
+              } else if (typeof data.thought === "string") {
+                void publishConversationEvent(conversationId, { type: "thought", messageId: pendingMessageId, thought: data.thought });
               }
             }
           };
+          const sendDone = () => controller.enqueue(encoder.encode("data: [DONE]\n\n"));
 
           try {
             let fullOutput = "";
@@ -191,7 +195,7 @@ export async function POST(req: NextRequest) {
 
             // Keep the raw response in fullOutput for widget parsing, but strip the
             // ```widget block out of the live token stream so it never renders.
-            const widgetStripper = createWidgetStripper((token) => send(JSON.stringify({ token })));
+            const widgetStripper = createWidgetStripper((token) => send({ token }));
 
             const streamResult = await streamLLMWithLogging({
               conversationId,
@@ -202,7 +206,7 @@ export async function POST(req: NextRequest) {
               },
               onThought: (thought) => {
                 thinkingText += (thinkingText ? "\n" : "") + thought;
-                send(JSON.stringify({ thought }));
+                send({ thought });
               },
               isAborted: () => aborted,
               providerOverride,
@@ -217,7 +221,7 @@ export async function POST(req: NextRequest) {
                 data: { conversationId, phase: "output", action: "blocked", reason: outputModeration.reason, categories: outputModeration.categories, sample: sampleText(fullOutput) },
               });
               const assistantMessage = await prisma.chatMessage.create({ data: { conversationId, role: "assistant", content: refusal } });
-              send(JSON.stringify({ moderated: true, message: assistantMessage, conversationId }));
+              send({ moderated: true, message: assistantMessage, conversationId });
             } else {
               await prisma.safetyAuditLog.create({
                 data: { conversationId, phase: "output", action: "allowed", categories: [], sample: sampleText(fullOutput) },
@@ -231,13 +235,13 @@ export async function POST(req: NextRequest) {
               enqueueQualityScore(assistantMessage.id);
               enqueueEmbedding(conversationId);
               persistReasoningTrace({ messageId: assistantMessage.id, provider: streamResult.provider, thinkingText });
-              send(JSON.stringify({ done: true, message: assistantMessage, widget: widgetInteraction, conversationId, provider: streamResult.provider, model: streamResult.model }));
+              send({ done: true, message: assistantMessage, widget: widgetInteraction, conversationId, provider: streamResult.provider, model: streamResult.model, pendingMessageId });
               if (isCollaborative) void publishConversationEvent(conversationId, { type: "message_created", message: assistantMessage });
             }
           } catch (err) {
-            send(JSON.stringify({ error: err instanceof Error ? err.message : "Stream failed" }));
+            send({ error: err instanceof Error ? err.message : "Stream failed" });
           } finally {
-            send("[DONE]");
+            sendDone();
             controller.close();
             if (isCollaborative) void releaseSendLock(conversationId);
           }
