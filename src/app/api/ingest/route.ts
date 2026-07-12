@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createHash } from "crypto";
 import { getIngestQueue } from "@/lib/queue";
 import { logSchema } from "@/lib/ingest-schema";
+import { idempotencyKeyFromPayload } from "@/lib/log-sink";
 
-function idempotencyKeyFromPayload(payload: unknown): string {
-  const serialized = JSON.stringify(payload);
-  return createHash("sha256").update(serialized).digest("hex");
-}
-
+// This route is for external log producers only — the app's own sendLog() enqueues
+// in-process (see src/lib/llm.ts) and never calls it.
 export async function POST(req: NextRequest) {
+  const expectedToken = process.env.INGEST_TOKEN;
+  if (!expectedToken) {
+    return NextResponse.json({ ok: false, error: "Ingest endpoint is not configured" }, { status: 503 });
+  }
+  if (req.headers.get("x-ingest-token") !== expectedToken) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const raw = await req.json();
     const payload = logSchema.parse(raw);

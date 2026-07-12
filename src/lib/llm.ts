@@ -3,6 +3,8 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
 import { REASONING_SUFFIX, createThoughtSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
+import { getIngestQueue } from "@/lib/queue";
+import { writeLogDirect, idempotencyKeyFromPayload } from "@/lib/log-sink";
 
 type LLMMessage = { role: string; content: string };
 export type ProviderName = "primary" | "gemini" | "grok" | "openai" | "anthropic" | "ollama";
@@ -52,23 +54,22 @@ export function preview(text: string, max = 280): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
 }
 
+// Fire-and-forget by contract (never awaited by callers). Enqueues in-process onto the
+// BullMQ ingest queue when Redis is configured; on any failure (or no Redis at all)
+// falls back to writing the InferenceLog row directly so a log is never silently dropped.
 export async function sendLog(event: LogEvent): Promise<void> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-  if (!baseUrl) return;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    await fetch(`${baseUrl}/api/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch {}
-  finally {
-    clearTimeout(timer);
+  const eventId = idempotencyKeyFromPayload(event);
+  if (process.env.REDIS_URL) {
+    try {
+      await getIngestQueue().add("ingest-log", { eventId, payload: event }, { jobId: eventId });
+      return;
+    } catch {
+      // fall through to direct write
+    }
   }
+  try {
+    await writeLogDirect(eventId, event);
+  } catch {}
 }
 
 export function providerModel(provider: ProviderName): string {
