@@ -63,7 +63,8 @@ export default function ChatUI() {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [raceMode, setRaceMode] = useState(false);
-  const [raceProviders, setRaceProviders] = useState<string[]>(["gemini", "grok"]);
+  const [raceProviders, setRaceProviders] = useState<string[]>([]);
+  const [availableProviders, setAvailableProviders] = useState<string[]>([]);
   const [toolsMode, setToolsMode] = useState(false);
   const [branchRefreshKey, setBranchRefreshKey] = useState(0);
   const [insights, setInsights] = useState<ProactiveInsight[]>([]);
@@ -120,6 +121,14 @@ export default function ChatUI() {
         if (d?.user) refresh();
       })
       .catch(() => setUser(null));
+    fetch("/api/providers")
+      .then(parseJsonSafe)
+      .then((d) => {
+        const providers = (d?.providers || []).map((p: { provider: string }) => p.provider);
+        setAvailableProviders(providers);
+        setRaceProviders(providers.slice(0, 2));
+      })
+      .catch(() => setAvailableProviders([]));
   }, []);
 
   useEffect(() => { if (user) refresh(); }, [search, showArchived, user]);
@@ -417,13 +426,17 @@ export default function ChatUI() {
 
   const paletteActions: PaletteAction[] = [
     { id: "new-chat", label: "New conversation", hint: "Start a fresh chat", run: () => { setActiveId(null); setInput(""); } },
-    { id: "toggle-race", label: raceMode ? "Disable race mode" : "Enable race mode", hint: "Fan a prompt out to multiple providers", run: () => setRaceMode((v) => !v) },
-    ...["gemini", "grok", "openai", "anthropic", "ollama"].map((p) => ({
-      id: `provider-${p}`,
-      label: `${raceProviders.includes(p) ? "Remove" : "Add"} race provider: ${p}`,
-      hint: "Race mode provider selection",
-      run: () => toggleRaceProvider(p),
-    })),
+    ...(availableProviders.length >= 2
+      ? [
+          { id: "toggle-race", label: raceMode ? "Disable race mode" : "Enable race mode", hint: "Fan a prompt out to multiple providers", run: () => setRaceMode((v) => !v) },
+          ...availableProviders.map((p) => ({
+            id: `provider-${p}`,
+            label: `${raceProviders.includes(p) ? "Remove" : "Add"} race provider: ${p}`,
+            hint: "Race mode provider selection",
+            run: () => toggleRaceProvider(p),
+          })),
+        ]
+      : []),
     { id: "toggle-archived", label: showArchived ? "Hide archived conversations" : "Show archived conversations", run: () => setShowArchived((v) => !v) },
     { id: "scheduled-prompts", label: "Scheduled prompts", hint: "Manage recurring AI digests", run: () => setScheduleModalOpen(true) },
     ...(active
@@ -585,7 +598,8 @@ export default function ChatUI() {
           onFileUploaded={() => setError("")}
           raceMode={raceMode}
           raceProviders={raceProviders}
-          onToggleRaceMode={() => setRaceMode((v) => !v)}
+          raceProviderOptions={availableProviders}
+          onToggleRaceMode={availableProviders.length >= 2 ? () => setRaceMode((v) => !v) : undefined}
           onToggleRaceProvider={toggleRaceProvider}
           toolsEnabled={toolsMode}
           onToggleTools={() => setToolsMode((v) => !v)}

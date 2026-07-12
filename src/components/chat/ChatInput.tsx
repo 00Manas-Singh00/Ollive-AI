@@ -2,8 +2,6 @@
 
 import { useRef, useState } from "react";
 
-const RACE_PROVIDER_OPTIONS = ["gemini", "grok", "openai", "anthropic", "ollama"] as const;
-
 type Props = {
   value: string;
   loading: boolean;
@@ -14,6 +12,7 @@ type Props = {
   onFileUploaded?: (documentId: string, filename: string) => void;
   raceMode?: boolean;
   raceProviders?: string[];
+  raceProviderOptions?: string[];
   onToggleRaceMode?: () => void;
   onToggleRaceProvider?: (provider: string) => void;
   toolsEnabled?: boolean;
@@ -31,6 +30,7 @@ export default function ChatInput({
   onFileUploaded,
   raceMode = false,
   raceProviders = [],
+  raceProviderOptions = [],
   onToggleRaceMode,
   onToggleRaceProvider,
   toolsEnabled = false,
@@ -134,7 +134,7 @@ export default function ChatInput({
           </button>
           {raceMode && (
             <div className="race-provider-picker">
-              {RACE_PROVIDER_OPTIONS.map((p) => (
+              {raceProviderOptions.map((p) => (
                 <button
                   key={p}
                   type="button"

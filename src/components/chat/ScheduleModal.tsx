@@ -13,7 +13,6 @@ type Schedule = {
 
 type Frequency = "daily" | "weekly" | "monthly";
 
-const PROVIDERS = ["gemini", "grok", "openai", "anthropic", "ollama"];
 const WEEKDAYS = [
   { value: "1", label: "Monday" },
   { value: "2", label: "Tuesday" },
@@ -47,7 +46,8 @@ export default function ScheduleModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
 
   const [prompt, setPrompt] = useState("");
-  const [provider, setProvider] = useState("gemini");
+  const [providers, setProviders] = useState<string[]>([]);
+  const [provider, setProvider] = useState("");
   const [frequency, setFrequency] = useState<Frequency>("weekly");
   const [time, setTime] = useState("09:00");
   const [weekday, setWeekday] = useState("1");
@@ -64,6 +64,17 @@ export default function ScheduleModal({ onClose }: { onClose: () => void }) {
   }
 
   useEffect(() => { void load(); }, []);
+
+  useEffect(() => {
+    fetch("/api/providers")
+      .then(parseJsonSafe)
+      .then((d) => {
+        const list = (d?.providers || []).map((p: { provider: string }) => p.provider);
+        setProviders(list);
+        setProvider((current) => current || list[0] || "");
+      })
+      .catch(() => setProviders([]));
+  }, []);
 
   async function createSchedule() {
     if (!prompt.trim()) return;
@@ -121,7 +132,7 @@ export default function ScheduleModal({ onClose }: { onClose: () => void }) {
             />
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
               <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                {providers.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
               <select value={frequency} onChange={(e) => setFrequency(e.target.value as Frequency)}>
                 <option value="daily">Daily</option>
