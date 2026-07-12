@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
 
     for (const turn of userTurns) {
-      const inputModeration = moderateInput(turn.content);
+      const inputModeration = await moderateInput(turn.content);
       if (inputModeration.blocked) {
         const refusal = refusalTemplate(inputModeration.reason);
         await prisma.safetyAuditLog.create({
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         providerOverride: providerOverride as ProviderName | undefined,
       });
 
-      const outputModeration = moderateOutput(completion.output);
+      const outputModeration = await moderateOutput(completion.output);
       if (outputModeration.blocked) {
         const refusal = refusalTemplate(outputModeration.reason);
         await prisma.safetyAuditLog.create({

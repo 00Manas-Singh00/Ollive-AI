@@ -93,7 +93,7 @@ async function buildConversation(req: NextRequest) {
   }
   const isCollaborative = conversation.isCollaborative;
 
-  const inputModeration = moderateInput(message);
+  const inputModeration = await moderateInput(message);
   if (inputModeration.blocked) {
     const refusal = refusalTemplate(inputModeration.reason);
     await prisma.safetyAuditLog.create({
@@ -210,7 +210,7 @@ export async function POST(req: NextRequest) {
             });
             widgetStripper.flush();
 
-            const outputModeration = moderateOutput(fullOutput);
+            const outputModeration = await moderateOutput(fullOutput);
             if (outputModeration.blocked) {
               const refusal = refusalTemplate(outputModeration.reason);
               await prisma.safetyAuditLog.create({
@@ -286,7 +286,7 @@ export async function POST(req: NextRequest) {
       completion = await callLLMWithLogging({ conversationId, messages: llmMessages!, providerOverride, modelOverride });
     }
 
-    const outputModeration = moderateOutput(completion.output);
+    const outputModeration = await moderateOutput(completion.output);
     if (outputModeration.blocked) {
       const refusal = refusalTemplate(outputModeration.reason);
       await prisma.safetyAuditLog.create({

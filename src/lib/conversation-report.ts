@@ -133,7 +133,7 @@ export async function generateReport(
   const transcript = await buildTranscript(conversationId, conversation.messages);
   const { report, model } = await withTimeout(generateJsonReport(conversationId, transcript), REPORT_TIMEOUT_MS);
 
-  const moderation = moderateOutput(report.summary);
+  const moderation = await moderateOutput(report.summary);
   const finalReport: ReportData = moderation.blocked ? { ...report, summary: refusalTemplate(moderation.reason) } : report;
   await prisma.safetyAuditLog.create({
     data: {

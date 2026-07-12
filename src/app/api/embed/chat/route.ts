@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     }
     const conversationId = conversation.id;
 
-    const inputModeration = moderateInput(body.message);
+    const inputModeration = await moderateInput(body.message);
     if (inputModeration.blocked) {
       const refusal = refusalTemplate(inputModeration.reason);
       await prisma.safetyAuditLog.create({
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
 
     const completion = await callLLMWithLogging({ conversationId, messages: llmMessages });
 
-    const outputModeration = moderateOutput(completion.output);
+    const outputModeration = await moderateOutput(completion.output);
     if (outputModeration.blocked) {
       const refusal = refusalTemplate(outputModeration.reason);
       await prisma.safetyAuditLog.create({

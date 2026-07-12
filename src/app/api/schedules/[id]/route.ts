@@ -29,7 +29,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       const cronError = validateCronExpression(patch.cronExpression);
       if (cronError) return NextResponse.json({ error: cronError }, { status: 400 });
     }
-    if (patch.prompt && moderateInput(patch.prompt).blocked) {
+    if (patch.prompt && (await moderateInput(patch.prompt)).blocked) {
       return NextResponse.json({ error: "Prompt was blocked by content safety rules" }, { status: 400 });
     }
     if (patch.isActive === true && !existing.isActive) {

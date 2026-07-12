@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Maximum of ${MAX_SCHEDULES_PER_USER} active schedules per user` }, { status: 400 });
     }
 
-    const inputModeration = moderateInput(body.prompt);
+    const inputModeration = await moderateInput(body.prompt);
     if (inputModeration.blocked) {
       return NextResponse.json({ error: "Prompt was blocked by content safety rules" }, { status: 400 });
     }

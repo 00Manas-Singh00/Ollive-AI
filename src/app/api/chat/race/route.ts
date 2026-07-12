@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       conversationId = conversation.id;
     }
 
-    const inputModeration = moderateInput(content);
+    const inputModeration = await moderateInput(content);
     if (inputModeration.blocked) {
       const refusal = refusalTemplate(inputModeration.reason);
       await prisma.safetyAuditLog.create({
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
           const latencyMs = Date.now() - start;
 
           let outputContent = response.output;
-          const outputModeration = moderateOutput(outputContent);
+          const outputModeration = await moderateOutput(outputContent);
           await prisma.safetyAuditLog.create({
             data: {
               conversationId,

@@ -98,7 +98,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         providerOverride: providerOverride as ProviderName | undefined,
       });
 
-      const outputModeration = moderateOutput(completion.output);
+      const outputModeration = await moderateOutput(completion.output);
       if (outputModeration.blocked) {
         const refusal = refusalTemplate(outputModeration.reason);
         await prisma.safetyAuditLog.create({
