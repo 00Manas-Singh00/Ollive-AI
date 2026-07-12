@@ -1,49 +1,174 @@
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ollive
+      POSTGRES_PASSWORD: ollive
+      POSTGRES_DB: ollive
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ollive -d ollive"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Dev-only: a local OpenAI-compatible endpoint for LLM_BASE_URL/LLM_CHAT_MODEL.
+  # `docker compose --profile ollama up` — pull a model once with:
+  #   docker compose exec ollama ollama pull qwen2.5:7b
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  # Dev-only: a local OpenAI-compatible STT endpoint for WHISPER_BASE_URL.
+  # `docker compose --profile whisper up`
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    profiles: ["whisper"]
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
   app:
     build: .
+    command: sh -c "npx prisma migrate deploy && npm run start"
+    restart: unless-stopped
     ports:
       - "3000:3000"
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ingest-worker:
+    build: .
+    command: npm run worker:ingest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
+    volumes:
+      - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   quality-score-worker:
     build: .
     command: npm run worker:quality-score
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   ambient-insight-worker:
     build: .
     command: npm run worker:ambient-insight
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   embedding-worker:
     build: .
     command: npm run worker:embedding
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   scheduled-prompt-worker:
     build: .
     command: npm run worker:scheduled-prompt
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   prompt-lab-worker:
     build: .
     command: npm run worker:prompt-lab
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  ollama-data:

@@ -6,16 +6,18 @@ This file is the authoritative reference for continuing development on this proj
 
 ## Project Overview
 
-**Ollive AI** is a Next.js 15 + PostgreSQL + BullMQ application for LLM inference logging and management. It provides a chat UI backed by multiple LLM providers (Gemini, Grok), with structured telemetry, prompt versioning, safety moderation, and per-user workspaces.
+**Ollive AI** is a Next.js 15 + PostgreSQL + BullMQ application for LLM inference logging and management. It provides a chat UI backed by a two-tier inference architecture, with structured telemetry, prompt versioning, safety moderation, and per-user workspaces.
 
-**Stack:** Next.js 15 (App Router), TypeScript, Prisma ORM, PostgreSQL, BullMQ + ioredis, React (client components only where needed).
+**Inference architecture:** PRIMARY is any self-hosted OpenAI-compatible endpoint (vLLM/SGLang/Ollama — the code has no vendor-specific branches for it) via `LLM_BASE_URL` + `LLM_CHAT_MODEL` (flagship) / `LLM_SMALL_MODEL` (background jobs). BACKUP is Gemini (`GEMINI_API_KEY`), used automatically only when the primary endpoint fails before any token has streamed back. Legacy providers (Grok, OpenAI cloud, Anthropic, Ollama-direct) exist as adapters but are excluded from `configuredProviders()` unless `ENABLE_EXTRA_PROVIDERS=true`, and even then are manual-override-only (e.g. race mode) — never part of automatic failover. See `docs/architecture-notes.md` for the full env var table.
+
+**Stack:** Next.js 15 (App Router), TypeScript, Prisma ORM, PostgreSQL (+ pgvector), BullMQ + ioredis, React (client components only where needed).
 
 ---
 
 ## Invariants — Never Break These
 
-- Ingestion is **fire-and-forget** — never `await sendLog(...)`. Use `void sendLog(...)`.
-- Every prompt resolution must write a `PromptDecision` record.
+- Ingestion is **fire-and-forget** — never `await sendLog(...)`. Use `void sendLog(...)`. Every `sendLog()` call needs a fresh `eventId: crypto.randomUUID()`.
+- `resolveSystemPrompt()` writes a `PromptDecision` record only when an experiment is `RUNNING` for that profile or the caller passed `versionOverride` — not on every request (see `src/lib/prompt-manager.ts`).
 - Safety audit logs written for **both** `blocked` and `allowed` outcomes (input + output phases).
 - Every protected route calls `requireSessionUser()` as its **first** statement.
 - All new business logic goes in `src/lib/` — not inline in API routes.
@@ -24,8 +26,8 @@ This file is the authoritative reference for continuing development on this proj
 - No new top-level npm dependencies without a justification comment.
 - All new Prisma model changes require a migration file — never `db push` in production.
 - Migration naming: `YYYYMMDD_phase{N}_{description}` (e.g. `20260613_phase0_hmac_session`).
-- New LLM providers: add to `ProviderName` union in `src/lib/llm.ts`, implement in `runProvider`.
-- New moderation rules: add to pattern arrays in `src/lib/safety.ts` only.
+- Automatic provider failover is always `[primary, gemini]` — never add a third provider to the automatic plan. New legacy/manual-only providers: add to `ProviderName` union in `src/lib/llm.ts`, implement in `runProvider`, gate behind `ENABLE_EXTRA_PROVIDERS`.
+- New moderation rules: add to pattern arrays in `src/lib/safety.ts` only (the regex path — `SAFETY_JUDGE=llm` is a separate, optional path).
 
 ---
 
@@ -450,13 +452,38 @@ Global keyboard-driven palette: jump to conversations, trigger actions, fuzzy-ma
 
 ---
 
+### Phase 25 — Two-Tier Provider Architecture Migration ✅ COMPLETE
+
+Restructured inference around a self-hosted primary endpoint (any OpenAI-compatible API — vLLM/SGLang/Ollama) with Gemini as an automatic backup, closing a set of correctness/security bugs found in an architecture audit (open `/api/ingest` + signin, fake grok/ollama streaming, hash-based idempotency, hardcoded provider assumptions throughout).
+
+**Implemented (2026-07-12):**
+- **Providers** (`src/lib/llm.ts`): `ProviderName` gained `"primary"`; `configuredProviders()` returns `["primary" if LLM_BASE_URL, "gemini" if GEMINI_API_KEY]` plus legacy providers only when `ENABLE_EXTRA_PROVIDERS=true`. `smallModel()` added for background-job models. `getProviderPlan()` is always `[primary, gemini]` filtered to configured — no more routing-policy provider selection. `executeWithFailover()` only fails over pre-first-token on a typed status/network check (no message substring sniffing); errors are tagged with the actually-attempted provider/model (`lastAttemptFromError()`) instead of hardcoding `"gemini"` in error logs. `runProvider`/`runProviderWithTools` reuse the generalized `callOpenAI`/`streamOpenAI`/`callOpenAIWithTools` (accept `baseURL`/`apiKey`) for both `"primary"` and legacy `"openai"`. `chat/route.ts` derives provider/model from `getProviderPlan()`/`providerModel()` instead of `GEMINI_API_KEY`/`GROK_API_KEY` presence checks; both the sync JSON response and the streaming `done` SSE event now include `provider`/`model`.
+- **Logging resilience**: `src/lib/log-sink.ts` (`writeLogDirect()`) writes `InferenceLog` directly against Postgres. `sendLog()` enqueues in-process onto BullMQ (`getIngestQueue()`) when `REDIS_URL` is set, falling back to `writeLogDirect()` on any failure or when Redis isn't configured — a log is never silently dropped. `POST /api/ingest` is now for external producers only, gated on `x-ingest-token === INGEST_TOKEN` (503 if unset).
+- **Idempotency**: `LogEvent`/`IngestPayload` gained a required `eventId`, generated via `crypto.randomUUID()` at the start of every logging call site (`callLLMWithLogging`, `streamLLMWithLogging`, and the tool-loop/race/speech routes that log manually). `InferenceLog.eventId String @unique`; both the ingest worker and `writeLogDirect()` upsert on it. The old `sha256(payload)` hash-based id generation is gone.
+- **Auth**: `User.passwordHash` (nullable, scrypt via `node:crypto` — no new dependency, `src/lib/password.ts`). `POST /api/auth/signup` creates an account; `POST /api/auth/signin` now verifies a password instead of upserting on email alone (previously anyone could sign in as anyone by just supplying their email). `scripts/seed-admin.mjs` (`npm run seed:admin`) creates/updates an `ADMIN` user from `ADMIN_EMAIL`/`ADMIN_PASSWORD`. `AuthGate.tsx` gained a password field and a signin/signup mode toggle.
+- **Safety** (`src/lib/safety.ts`): removed `"step-by-step"`/`"do this first"` from `OUTPUT_BLOCK_PATTERNS` (over-broad — matched ordinary tutorials). `SAFETY_JUDGE=llm` runs a JSON-verdict classifier via `smallModel()` on the primary endpoint (zod-validated, fails open to the regex path on any error); `moderateInput`/`moderateOutput` are now async — all ~9 call sites across the codebase updated to `await`.
+- **Quality scoring** (`src/lib/quality-scorer.ts`): `QUALITY_JUDGE=llm` rubric-scores (helpfulness/correctness/clarity, 0–100 + reason) via `smallModel()`, zod-validated, fails open to the existing heuristic scorer. `scoreResponseSmart()` is the new dispatcher; the quality-score worker now fetches the preceding user message for rubric context.
+- **RAG / embeddings** (`src/lib/rag.ts`, `src/lib/semantic-search.ts`): real embeddings via `POST {EMBEDDING_BASE_URL||LLM_BASE_URL}/embeddings` (OpenAI format, `EMBEDDING_MODEL`), falling back to the hash-TF vector (renamed `"hash-tf-512"`, was misleadingly `"tfidf-hash-512"`) when unset or unreachable. Migration adds the `pgvector` extension and an `embeddingVector vector(768)` column (dimension configurable via `EMBEDDING_DIM`) + ivfflat cosine index on both `KnowledgeChunk` and `MessageEmbedding`, alongside the existing JSON columns which remain the fallback storage. Retrieval and semantic search try a raw-SQL pgvector cosine query first, falling back to the in-process JSON scan when no real vector is available.
+- **Tools** (`src/lib/llm.ts`, `src/lib/tools/loop.ts`): tool calling on `"primary"` reuses `callOpenAIWithTools` with `baseURL`/`apiKey`; Gemini's `functionResponse` turns now use role `"user"` (was `"function"`, invalid per current `@google/genai`). `runToolLoop()` gives one retry on zod-invalid tool arguments — re-asks the model with the validation error appended — before recording a hard `ERROR`. Tool-calling turns use a fixed `TOOL_LOOP_TEMPERATURE = 0.2`; ordinary chat reads `LLM_TEMPERATURE` (default 0.9, unchanged).
+- **Reasoning** (`src/lib/reasoning-trace.ts`, `src/lib/llm.ts`): the `"primary"` path no longer gets the `Thought:`-priming `REASONING_SUFFIX`; instead `createThinkTagSplitter()` parses a native `<think>...</think>` block from the stream (buffered tag detection, no-op passthrough when the tag never appears) — matches self-hosted reasoning models (GLM/Qwen3-style) that emit this natively. Anthropic's thinking config fixed to `{ type: "enabled", budget_tokens }` (was the invalid `{ type: "adaptive", display: "summarized" }`); `ANTHROPIC_THINKING_BUDGET_TOKENS` env, clamped below `LLM_MAX_OUTPUT_TOKENS`. Gemini's `thinkingConfig` unchanged.
+- **Budget/cost** (`src/lib/cost.ts`, `src/lib/budget.ts`): added a `primary` cost table entry from `LLM_COST_IN_PER_1K`/`LLM_COST_OUT_PER_1K` (default 0). `downgradeProvider()` now always resolves to a member of `configuredProviders()` — primary + `smallModel()` first, then gemini, then whatever else is configured — instead of a hardcoded `"gemini"` fallback that could point at an unconfigured provider.
+- **Speech** (`src/lib/speech.ts`): STT order is `WHISPER_BASE_URL` (self-hosted, OpenAI-compatible) first, Gemini backup if `GEMINI_API_KEY` is set, else the route 501s. The old direct-`OPENAI_API_KEY` STT path is gone (point `WHISPER_BASE_URL` at OpenAI's endpoint if you want that).
+- **UI**: new `GET /api/providers` (configured providers + models); `ChatUI.tsx`/`ChatInput.tsx`/`ScheduleModal.tsx` fetch it instead of hardcoding `["gemini","grok","openai","anthropic","ollama"]`. Race mode's toggle and provider picker are hidden entirely when fewer than 2 providers are configured.
+- **Misc fixes**: collab SSE `token`/`thought` events now carry a per-stream `pendingMessageId` (`crypto.randomUUID()`, generated once per stream) instead of `conversationId` masquerading as a message id; the `done` event also carries it for reconciliation. `chat/route.ts`'s SSE `send()` takes an object and stringifies once, instead of stringifying then re-`JSON.parse`-ing for collab publishing. `resolveSystemPrompt()` writes a `PromptDecision` row only when an experiment is `RUNNING` or `versionOverride` is set (was every request). `prompt-lab.ts`'s `collectArmStats()` went from an N+1 per-decision loop to two grouped queries (`chatMessage.findMany` with `conversationId IN [...]`, `safetyAuditLog.groupBy`) with in-process pairing. Deleted the stale duplicate `evals/run.ts` (kept `evals/run.mjs`, which already covers the same cases with proper ESM env-var handling).
+- **Deploy**: `docker-compose.yml` gained `postgres` (`pgvector/pgvector:pg16`, healthchecked), `redis:7` (healthchecked), an `ingest-worker` service (previously missing entirely), and optional `ollama`/`whisper` profiles for a fully local dev stack; the `app` service now runs `npx prisma migrate deploy && npm run start`. `.env.example` and `docs/architecture-notes.md` rewritten around the two-tier env vars.
+
+**Verified:** `npx tsc --noEmit` and `npm run build` pass after every task; migrations applied against the project's Supabase Postgres instance (pgvector extension confirmed available).
+
+---
+
 ## Running the App
 
 ```bash
-# Start Redis (required for BullMQ)
+# Redis is optional — logging/rate-limiting/collab degrade gracefully without it.
+# Start it if you want queue-backed ingestion instead of direct DB writes:
 redis-server &
 
-# Start ingest worker
+# Start ingest worker (only meaningful with Redis running)
 npm run worker:ingest &
 
 # Start dev server
