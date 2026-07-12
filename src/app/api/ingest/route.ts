@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getIngestQueue } from "@/lib/queue";
 import { logSchema } from "@/lib/ingest-schema";
-import { idempotencyKeyFromPayload } from "@/lib/log-sink";
 
 // This route is for external log producers only — the app's own sendLog() enqueues
 // in-process (see src/lib/llm.ts) and never calls it.
@@ -17,7 +16,7 @@ export async function POST(req: NextRequest) {
   try {
     const raw = await req.json();
     const payload = logSchema.parse(raw);
-    const eventId = idempotencyKeyFromPayload(payload);
+    const eventId = payload.eventId;
     const ingestQueue = getIngestQueue();
 
     await ingestQueue.add(

@@ -36,8 +36,11 @@ const worker = new Worker<JobData>(
       });
     }
 
-    await prisma.inferenceLog.create({
-      data: {
+    await prisma.inferenceLog.upsert({
+      where: { eventId: payload.eventId },
+      update: {},
+      create: {
+        eventId: payload.eventId,
         conversationId: payload.conversationId,
         provider: payload.provider,
         model: payload.model,

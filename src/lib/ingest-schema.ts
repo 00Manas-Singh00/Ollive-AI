@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const logSchema = z.object({
+  eventId: z.string().min(1),
   conversationId: z.string().min(1),
   provider: z.string().min(1),
   model: z.string().min(1),

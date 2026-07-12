@@ -322,6 +322,7 @@ model MessageAnnotation {
 
 model InferenceLog {
   id                String   @id @default(cuid())
+  eventId           String   @unique
   conversationId    String
   provider          String
   model             String

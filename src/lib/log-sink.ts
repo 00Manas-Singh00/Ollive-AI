@@ -1,31 +1,26 @@
-import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { recordSpend } from "@/lib/budget";
 import type { IngestPayload } from "@/lib/ingest-schema";
-
-// TODO(T5): replaced by a real eventId generated at request start; this hash is a
-// temporary idempotency key derived from payload content.
-export function idempotencyKeyFromPayload(payload: unknown): string {
-  const serialized = JSON.stringify(payload);
-  return createHash("sha256").update(serialized).digest("hex");
-}
 
 // Writes an InferenceLog row directly against Postgres, bypassing BullMQ. Used when
 // Redis is unavailable, or as the resilient fallback if the in-process enqueue fails.
 // Mirrors src/workers/ingest-worker.ts's processing (idempotency + InferenceLog write
 // + spend accounting) so logs never silently vanish just because there's no worker.
-export async function writeLogDirect(eventId: string, payload: IngestPayload): Promise<void> {
-  const existing = await prisma.ingestionEvent.findUnique({ where: { id: eventId } });
+// Idempotent on payload.eventId (upsert) — safe to call twice for the same event.
+export async function writeLogDirect(payload: IngestPayload): Promise<void> {
+  const existing = await prisma.ingestionEvent.findUnique({ where: { id: payload.eventId } });
   if (existing?.status === "processed") return;
 
   if (!existing) {
     await prisma.ingestionEvent.create({
-      data: { id: eventId, conversationId: payload.conversationId, status: "processing" },
+      data: { id: payload.eventId, conversationId: payload.conversationId, status: "processing" },
     });
   }
 
-  await prisma.inferenceLog.create({
-    data: {
+  await prisma.inferenceLog.upsert({
+    where: { eventId: payload.eventId },
+    create: {
+      eventId: payload.eventId,
       conversationId: payload.conversationId,
       provider: payload.provider,
       model: payload.model,
@@ -43,6 +38,7 @@ export async function writeLogDirect(eventId: string, payload: IngestPayload): P
       outputPreview: payload.outputPreview,
       errorMessage: payload.errorMessage,
     },
+    update: {},
   });
 
   if (payload.status === "success" && ((payload.promptTokens ?? 0) > 0 || (payload.completionTokens ?? 0) > 0)) {
@@ -56,8 +52,8 @@ export async function writeLogDirect(eventId: string, payload: IngestPayload): P
   }
 
   await prisma.ingestionEvent.upsert({
-    where: { id: eventId },
-    create: { id: eventId, conversationId: payload.conversationId, status: "processed", processedAt: new Date() },
+    where: { id: payload.eventId },
+    create: { id: payload.eventId, conversationId: payload.conversationId, status: "processed", processedAt: new Date() },
     update: { status: "processed", processedAt: new Date() },
   });
 }

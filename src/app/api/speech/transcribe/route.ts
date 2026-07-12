@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSessionUser } from "@/lib/auth";
@@ -37,6 +38,7 @@ export async function POST(req: NextRequest) {
 
     if (conversationId) {
       void sendLog({
+        eventId: randomUUID(),
         conversationId,
         provider: `${result.provider}-stt`,
         model: result.model,

@@ -1,4 +1,5 @@
 export type LogEvent = {
+  eventId: string;
   conversationId: string;
   provider: string;
   model: string;

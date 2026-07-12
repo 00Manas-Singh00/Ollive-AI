@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
@@ -269,6 +270,7 @@ export async function POST(req: NextRequest) {
       toolCallRecords = result.toolCalls;
       completion = { output: result.output, provider, model };
       void sendLog({
+        eventId: randomUUID(),
         conversationId,
         provider,
         model,

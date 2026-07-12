@@ -1,10 +1,11 @@
+import { randomUUID } from "crypto";
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
 import { REASONING_SUFFIX, createThoughtSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
 import { getIngestQueue } from "@/lib/queue";
-import { writeLogDirect, idempotencyKeyFromPayload } from "@/lib/log-sink";
+import { writeLogDirect } from "@/lib/log-sink";
 
 type LLMMessage = { role: string; content: string };
 export type ProviderName = "primary" | "gemini" | "grok" | "openai" | "anthropic" | "ollama";
@@ -58,17 +59,16 @@ export function preview(text: string, max = 280): string {
 // BullMQ ingest queue when Redis is configured; on any failure (or no Redis at all)
 // falls back to writing the InferenceLog row directly so a log is never silently dropped.
 export async function sendLog(event: LogEvent): Promise<void> {
-  const eventId = idempotencyKeyFromPayload(event);
   if (process.env.REDIS_URL) {
     try {
-      await getIngestQueue().add("ingest-log", { eventId, payload: event }, { jobId: eventId });
+      await getIngestQueue().add("ingest-log", { eventId: event.eventId, payload: event }, { jobId: event.eventId });
       return;
     } catch {
       // fall through to direct write
     }
   }
   try {
-    await writeLogDirect(eventId, event);
+    await writeLogDirect(event);
   } catch {}
 }
 
@@ -302,6 +302,7 @@ export async function callLLMWithLogging(params: {
 }): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
+  const eventId = randomUUID();
 
   try {
     const result = await executeWithFailover({
@@ -314,6 +315,7 @@ export async function callLLMWithLogging(params: {
     const responseTs = new Date();
 
     void sendLog({
+      eventId,
       conversationId: params.conversationId,
       provider: result.provider,
       model: result.model,
@@ -334,6 +336,7 @@ export async function callLLMWithLogging(params: {
     const responseTs = new Date();
     const { provider, model } = lastAttemptFromError(error, params.providerOverride);
     void sendLog({
+      eventId,
       conversationId: params.conversationId,
       provider,
       model,
@@ -360,6 +363,7 @@ export async function streamLLMWithLogging(params: {
 }): Promise<{ output: string; provider: ProviderName; model: string }> {
   const requestTs = new Date();
   const start = Date.now();
+  const eventId = randomUUID();
 
   try {
     const result = await executeWithFailover({
@@ -375,6 +379,7 @@ export async function streamLLMWithLogging(params: {
 
     const responseTs = new Date();
     void sendLog({
+      eventId,
       conversationId: params.conversationId,
       provider: result.provider,
       model: result.model,
@@ -398,6 +403,7 @@ export async function streamLLMWithLogging(params: {
     const responseTs = new Date();
     const { provider, model } = lastAttemptFromError(error, params.providerOverride);
     void sendLog({
+      eventId,
       conversationId: params.conversationId,
       provider,
       model,

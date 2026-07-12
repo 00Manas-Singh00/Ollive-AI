@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -106,6 +107,7 @@ export async function POST(req: NextRequest) {
           });
 
           void sendLog({
+            eventId: randomUUID(),
             conversationId,
             provider,
             model,
@@ -124,6 +126,7 @@ export async function POST(req: NextRequest) {
           return raceResult;
         } catch (error) {
           void sendLog({
+            eventId: randomUUID(),
             conversationId,
             provider,
             model,
