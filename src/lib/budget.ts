@@ -1,7 +1,7 @@
 import Redis from "ioredis";
 import { prisma } from "@/lib/prisma";
 import { calculateCostUsd } from "@/lib/cost";
-import { PROVIDER_NAMES, type ProviderName } from "@/lib/llm";
+import { configuredProviders, smallModel, type ProviderName } from "@/lib/llm";
 
 let cachedClient: Redis | null = null;
 
@@ -98,10 +98,27 @@ export async function checkBudget(userId: string): Promise<BudgetStatus> {
   return { status, spendUsd, budgetUsd, action };
 }
 
-// Maps any provider/model to the configured cheap fallback used when a
-// DOWNGRADE budget action fires (env BUDGET_FALLBACK_PROVIDER / BUDGET_FALLBACK_MODEL).
+// Maps any provider/model to a cheap fallback used when a DOWNGRADE budget action fires.
+// Must always resolve to a member of configuredProviders() — an unconfigured provider
+// would just fail the request instead of downgrading it. Preference order: an explicit
+// BUDGET_FALLBACK_PROVIDER (if actually configured) → primary's smallModel() (cheaper
+// background-job model on the same self-hosted endpoint) → gemini (backup) → whatever
+// else is configured.
 export function downgradeProvider(): { provider: ProviderName; model?: string } {
-  const raw = (process.env.BUDGET_FALLBACK_PROVIDER || "gemini").toLowerCase() as ProviderName;
-  const provider = PROVIDER_NAMES.includes(raw) ? raw : "gemini";
-  return { provider, model: process.env.BUDGET_FALLBACK_MODEL || undefined };
+  const configured = new Set(configuredProviders());
+  const modelOverride = process.env.BUDGET_FALLBACK_MODEL || undefined;
+
+  const requested = (process.env.BUDGET_FALLBACK_PROVIDER || "").toLowerCase() as ProviderName;
+  if (requested && configured.has(requested)) {
+    return { provider: requested, model: modelOverride };
+  }
+  if (configured.has("primary")) {
+    return { provider: "primary", model: modelOverride || smallModel() };
+  }
+  if (configured.has("gemini")) {
+    return { provider: "gemini", model: modelOverride };
+  }
+  const first = configuredProviders()[0];
+  if (!first) throw new Error("No configured provider available for budget downgrade");
+  return { provider: first, model: modelOverride };
 }

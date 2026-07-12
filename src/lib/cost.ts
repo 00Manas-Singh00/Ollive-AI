@@ -2,6 +2,14 @@
 export type CostEntry = { inputPer1k: number; outputPer1k: number };
 
 const COST_TABLE: Record<string, Record<string, CostEntry>> = {
+  // Self-hosted endpoint — $0/1k tokens by default (no metered API bill), overridable
+  // for shops that want budget tracking to reflect their own GPU-time economics.
+  primary: {
+    default: {
+      inputPer1k: Math.max(0, Number(process.env.LLM_COST_IN_PER_1K ?? 0) || 0),
+      outputPer1k: Math.max(0, Number(process.env.LLM_COST_OUT_PER_1K ?? 0) || 0),
+    },
+  },
   gemini: {
     "gemini-2.0-flash":       { inputPer1k: 0.00010, outputPer1k: 0.00040 },
     "gemini-1.5-pro":         { inputPer1k: 0.00125, outputPer1k: 0.00500 },
