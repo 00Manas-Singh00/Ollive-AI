@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@/lib/prisma";
-import { scoreResponse } from "@/lib/quality-scorer";
+import { scoreResponseSmart } from "@/lib/quality-scorer";
 
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
@@ -17,7 +17,12 @@ const worker = new Worker<JobData>(
     const message = await prisma.chatMessage.findUnique({ where: { id: job.data.messageId } });
     if (!message || message.role !== "assistant") return;
 
-    const result = scoreResponse(message.content);
+    const precedingUserMessage = await prisma.chatMessage.findFirst({
+      where: { conversationId: message.conversationId, role: "user", createdAt: { lt: message.createdAt } },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const result = await scoreResponseSmart(precedingUserMessage?.content ?? "", message.content);
 
     await prisma.qualityScore.upsert({
       where: { messageId: message.id },
