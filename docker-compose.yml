@@ -58,6 +58,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -75,6 +76,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -92,6 +94,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -109,6 +112,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -126,6 +130,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -143,6 +148,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
@@ -160,6 +166,7 @@ services:
       - .env
     environment:
       DATABASE_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
+      DIRECT_URL: "postgresql://ollive:ollive@postgres:5432/ollive"
       REDIS_URL: "redis://redis:6379"
     volumes:
       - ./prisma:/app/prisma
