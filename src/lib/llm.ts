@@ -5,8 +5,11 @@ import type { LogEvent } from "@/lib/types";
 import { REASONING_SUFFIX, createThoughtSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
 
 type LLMMessage = { role: string; content: string };
-export type ProviderName = "gemini" | "grok" | "openai" | "anthropic" | "ollama";
-export const PROVIDER_NAMES: ProviderName[] = ["gemini", "grok", "openai", "anthropic", "ollama"];
+export type ProviderName = "primary" | "gemini" | "grok" | "openai" | "anthropic" | "ollama";
+export const PROVIDER_NAMES: ProviderName[] = ["primary", "gemini", "grok", "openai", "anthropic", "ollama"];
+// Providers other than "primary" (self-hosted OpenAI-compatible endpoint) and "gemini"
+// (backup) are legacy/manual-only and hidden from configuredProviders() unless opted in.
+const EXTRA_PROVIDERS_ENABLED = process.env.ENABLE_EXTRA_PROVIDERS === "true";
 type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
 
 export type ProviderResponse = {
@@ -31,11 +34,15 @@ const GEMINI_THINKING_BUDGET = Math.max(0, Number(process.env.GEMINI_THINKING_BU
 
 const geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-function openaiClient(baseURL?: string): OpenAI {
+function openaiClient(baseURL?: string, apiKey?: string): OpenAI {
   return new OpenAI({
-    apiKey: baseURL ? "ollama" : (process.env.OPENAI_API_KEY ?? ""),
+    apiKey: apiKey ?? (baseURL ? "none" : (process.env.OPENAI_API_KEY ?? "")),
     ...(baseURL ? { baseURL } : {}),
   });
+}
+
+function primaryEndpoint(): { baseURL: string; apiKey: string } {
+  return { baseURL: process.env.LLM_BASE_URL || "", apiKey: process.env.LLM_API_KEY || "none" };
 }
 
 function anthropicClient(): Anthropic {
@@ -66,6 +73,7 @@ export async function sendLog(event: LogEvent): Promise<void> {
 }
 
 export function providerModel(provider: ProviderName): string {
+  if (provider === "primary") return process.env.LLM_CHAT_MODEL || "";
   if (provider === "grok") return process.env.GROK_MODEL || "grok-3-mini";
   if (provider === "openai") return process.env.OPENAI_MODEL || "gpt-4o-mini";
   if (provider === "anthropic") return process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
@@ -73,22 +81,31 @@ export function providerModel(provider: ProviderName): string {
   return process.env.GEMINI_MODEL || "gemini-2.5-flash";
 }
 
+// Cheaper/faster model for background jobs (judging, moderation, titles) served by the
+// primary self-hosted endpoint. Falls back to the flagship chat model when unset.
+export function smallModel(): string {
+  return process.env.LLM_SMALL_MODEL || process.env.LLM_CHAT_MODEL || "";
+}
+
 export function configuredProviders(): ProviderName[] {
   const list: ProviderName[] = [];
+  if (process.env.LLM_BASE_URL) list.push("primary");
   if (process.env.GEMINI_API_KEY) list.push("gemini");
-  if (process.env.GROK_API_KEY) list.push("grok");
-  if (process.env.OPENAI_API_KEY) list.push("openai");
-  if (process.env.ANTHROPIC_API_KEY) list.push("anthropic");
-  if (process.env.OLLAMA_BASE_URL) list.push("ollama");
+  if (EXTRA_PROVIDERS_ENABLED) {
+    if (process.env.GROK_API_KEY) list.push("grok");
+    if (process.env.OPENAI_API_KEY) list.push("openai");
+    if (process.env.ANTHROPIC_API_KEY) list.push("anthropic");
+    if (process.env.OLLAMA_BASE_URL) list.push("ollama");
+  }
   return list;
 }
 
 function providerOrder(policy: RoutingPolicy): ProviderName[] {
-  const manual = (process.env.LLM_PROVIDER || "gemini").toLowerCase() as ProviderName;
-  const all: ProviderName[] = ["gemini", "grok", "openai", "anthropic", "ollama"];
-  if (policy === "quality") return ["anthropic", "openai", "grok", "gemini", "ollama"];
-  if (policy === "latency") return ["gemini", "ollama", "openai", "grok", "anthropic"];
-  if (policy === "cost") return ["ollama", "gemini", "grok", "openai", "anthropic"];
+  const manual = (process.env.LLM_PROVIDER || "primary").toLowerCase() as ProviderName;
+  const all: ProviderName[] = ["primary", "gemini", "grok", "openai", "anthropic", "ollama"];
+  if (policy === "quality") return ["anthropic", "primary", "openai", "grok", "gemini", "ollama"];
+  if (policy === "latency") return ["primary", "gemini", "ollama", "openai", "grok", "anthropic"];
+  if (policy === "cost") return ["ollama", "primary", "gemini", "grok", "openai", "anthropic"];
   return [manual, ...all.filter((p) => p !== manual)];
 }
 
@@ -174,6 +191,17 @@ export async function runProvider(params: {
   // Reasoning capture is opt-in (streaming chat path only); direct callers (race, evals) are untouched.
   const reasoning = mode === "stream" && Boolean(onThought);
   const messages = reasoning && provider !== "anthropic" ? withReasoningSuffix(params.messages) : params.messages;
+
+  if (provider === "primary") {
+    const { baseURL, apiKey } = primaryEndpoint();
+    if (mode === "stream") {
+      return streamWithThoughtSplitter(
+        (p) => streamOpenAI({ ...p, baseURL, apiKey }),
+        { model, messages, onToken, onThought, isAborted },
+      );
+    }
+    return callOpenAI({ model, messages, baseURL, apiKey });
+  }
 
   if (provider === "grok") {
     const resp = await callGrok({ model, messages });
@@ -485,9 +513,9 @@ function toOpenAIMessages(messages: LLMMessage[]): OpenAI.Chat.ChatCompletionMes
   }));
 }
 
-async function callOpenAI(params: { model: string; messages: LLMMessage[] }): Promise<ProviderResponse> {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
-  const client = openaiClient();
+async function callOpenAI(params: { model: string; messages: LLMMessage[]; baseURL?: string; apiKey?: string }): Promise<ProviderResponse> {
+  if (!params.baseURL && !process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient(params.baseURL, params.apiKey);
   const res = await client.chat.completions.create({
     model: params.model,
     messages: toOpenAIMessages(params.messages),
@@ -507,9 +535,11 @@ async function streamOpenAI(params: {
   messages: LLMMessage[];
   onToken: (token: string) => void;
   isAborted?: () => boolean;
+  baseURL?: string;
+  apiKey?: string;
 }): Promise<ProviderResponse> {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
-  const client = openaiClient();
+  if (!params.baseURL && !process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient(params.baseURL, params.apiKey);
   const startedAt = Date.now();
   let firstTokenAt: number | null = null;
   let output = "";
