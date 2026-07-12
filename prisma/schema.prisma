@@ -376,8 +376,13 @@ model KnowledgeChunk {
   documentId String
   chunkIndex Int
   text       String            @db.Text
-  // embedding stored as JSON float array; upgrade path: migrate to pgvector Float[] with pg_vector extension
+  // Hash-TF fallback vector (always populated) — see embedText() in src/lib/rag.ts.
   embedding  Json?
+  // Real embedding-model vector, populated only when EMBEDDING_BASE_URL/EMBEDDING_MODEL
+  // resolve successfully. Dimension fixed at EMBEDDING_DIM (default 768); queried via
+  // raw SQL cosine distance (<=>), not the Prisma client. Managed by hand-written
+  // migrations — do not run `prisma migrate dev` against this model.
+  embeddingVector Unsupported("vector(768)")?
   document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   citations  MessageCitation[]
 
@@ -454,10 +459,13 @@ model ScheduledPrompt {
 model MessageEmbedding {
   id         String   @id @default(cuid())
   messageId  String   @unique
-  // embedding stored as JSON float array; upgrade path: pgvector Unsupported("vector(768)")
+  // Hash-TF fallback vector (always populated) — see embedText() in src/lib/rag.ts.
   vector     Json
-  // embedding model name so a model swap can invalidate stale vectors
+  // embedding model name actually used for this row (real model name, or the
+  // "hash-tf-512" fallback) so a model swap can invalidate stale vectors.
   model      String
+  // Real embedding-model vector; see KnowledgeChunk.embeddingVector for details.
+  embeddingVector Unsupported("vector(768)")?
   embeddedAt DateTime @default(now())
 
   message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)

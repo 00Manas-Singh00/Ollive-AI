@@ -1,6 +1,10 @@
 import { Worker } from "bullmq";
 import { prisma } from "@/lib/prisma";
-import { embedText, EMBEDDING_MODEL } from "@/lib/rag";
+import { embedText } from "@/lib/rag";
+
+function toVectorLiteral(vec: number[]): string {
+  return `[${vec.join(",")}]`;
+}
 
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
@@ -28,16 +32,30 @@ const worker = new Worker<JobData>(
       });
       if (messages.length === 0) break;
 
+      const embeddedMessages = await Promise.all(messages.map(async (m) => ({ ...m, ...(await embedText(m.content)) })));
+
       // Individual creates inside skipDuplicates-style guard: another job for the
       // same conversation may race; the @unique(messageId) makes this idempotent.
       await prisma.messageEmbedding.createMany({
-        data: messages.map((m) => ({
+        data: embeddedMessages.map((m) => ({
           messageId: m.id,
-          vector: embedText(m.content),
-          model: EMBEDDING_MODEL,
+          vector: m.vector,
+          model: m.model,
         })),
         skipDuplicates: true,
       });
+
+      await Promise.all(
+        embeddedMessages
+          .filter((m) => m.realVector)
+          .map((m) =>
+            prisma.$executeRawUnsafe(
+              `UPDATE "MessageEmbedding" SET "embeddingVector" = $1::vector WHERE "messageId" = $2`,
+              toVectorLiteral(m.realVector!),
+              m.id,
+            ),
+          ),
+      );
 
       embedded += messages.length;
       if (messages.length < BATCH_SIZE) break;
