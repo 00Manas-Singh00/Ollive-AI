@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ text: result.text });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Transcription failed" }, { status: 500 });
+    const status = (error as { status?: number })?.status ?? 500;
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Transcription failed" }, { status });
   }
 }
