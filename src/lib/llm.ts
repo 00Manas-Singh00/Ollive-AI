@@ -28,6 +28,13 @@ export type ProviderResponse = {
 // hidden reasoning phase also draws from this budget. Configurable, clamped [256, 8192].
 const MAX_OUTPUT_TOKENS = Math.min(8192, Math.max(256, Number(process.env.LLM_MAX_OUTPUT_TOKENS ?? 2048) || 2048));
 
+// Ordinary chat sampling temperature — configurable, existing default (0.9) unchanged.
+const CHAT_TEMPERATURE = Math.max(0, Math.min(2, Number(process.env.LLM_TEMPERATURE ?? 0.9) || 0.9));
+
+// Tool-calling turns are deliberately low-temperature: we want reliable, well-formed
+// tool_calls JSON, not creative variation.
+const TOOL_LOOP_TEMPERATURE = 0.2;
+
 // Gemini 2.5 models think before answering; those thinking tokens count against the
 // output budget and arrive as one post-thinking burst (no incremental streaming).
 // Default 0 disables thinking so the budget goes to the visible answer and tokens
@@ -451,7 +458,7 @@ async function callGemini(params: { model: string; messages: LLMMessage[] }) {
   const response = await geminiClient.models.generateContent({
     model: params.model,
     contents: toGeminiContents(params.messages),
-    config: { temperature: 0.9, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
+    config: { temperature: CHAT_TEMPERATURE, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
   });
 
   return {
@@ -479,7 +486,7 @@ async function streamGemini(params: {
   const stream = await geminiClient.models.generateContentStream({
     model: params.model,
     contents: toGeminiContents(params.messages),
-    config: { temperature: 0.9, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
+    config: { temperature: CHAT_TEMPERATURE, maxOutputTokens: MAX_OUTPUT_TOKENS, thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } },
   });
 
   for await (const chunk of stream) {
@@ -513,7 +520,7 @@ async function callGrok(params: { model: string; messages: LLMMessage[] }) {
     body: JSON.stringify({
       model: params.model,
       messages: params.messages,
-      temperature: 0.9,
+      temperature: CHAT_TEMPERATURE,
       max_tokens: MAX_OUTPUT_TOKENS,
     }),
     cache: "no-store",
@@ -546,7 +553,7 @@ async function callOpenAI(params: { model: string; messages: LLMMessage[]; baseU
   const res = await client.chat.completions.create({
     model: params.model,
     messages: toOpenAIMessages(params.messages),
-    temperature: 0.9,
+    temperature: CHAT_TEMPERATURE,
     max_tokens: MAX_OUTPUT_TOKENS,
   });
   return {
@@ -576,7 +583,7 @@ async function streamOpenAI(params: {
   const stream = await client.chat.completions.create({
     model: params.model,
     messages: toOpenAIMessages(params.messages),
-    temperature: 0.9,
+    temperature: CHAT_TEMPERATURE,
     max_tokens: MAX_OUTPUT_TOKENS,
     stream: true,
     stream_options: { include_usage: true },
@@ -738,6 +745,10 @@ export async function runProviderWithTools(params: {
   turns: ToolTurn[];
   tools: ToolDefinitionForProvider[];
 }): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
+  if (params.provider === "primary") {
+    const { baseURL, apiKey } = primaryEndpoint();
+    return callOpenAIWithTools({ ...params, baseURL, apiKey });
+  }
   if (params.provider === "anthropic") return callAnthropicWithTools(params);
   if (params.provider === "openai") return callOpenAIWithTools(params);
   if (params.provider === "grok") return callGrokWithTools(params);
@@ -826,13 +837,15 @@ async function callOpenAIWithTools(params: {
   model: string;
   turns: ToolTurn[];
   tools: ToolDefinitionForProvider[];
+  baseURL?: string;
+  apiKey?: string;
 }): Promise<{ content: string; toolCalls: ToolCallRequest[] }> {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
-  const client = openaiClient();
+  if (!params.baseURL && !process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
+  const client = openaiClient(params.baseURL, params.apiKey);
   const res = await client.chat.completions.create({
     model: params.model,
     messages: turnsToOpenAIMessages(params.turns),
-    temperature: 0.9,
+    temperature: TOOL_LOOP_TEMPERATURE,
     max_tokens: MAX_OUTPUT_TOKENS,
     ...(params.tools.length
       ? {
@@ -861,7 +874,7 @@ async function callGrokWithTools(params: {
     body: JSON.stringify({
       model: params.model,
       messages: turnsToOpenAIMessages(params.turns),
-      temperature: 0.9,
+      temperature: TOOL_LOOP_TEMPERATURE,
       max_tokens: MAX_OUTPUT_TOKENS,
       ...(params.tools.length
         ? {
@@ -905,7 +918,8 @@ function turnsToGeminiContents(turns: ToolTurn[]): { contents: Array<{ role: str
       contents.push({ role: "model", parts });
       continue;
     }
-    contents.push({ role: "function", parts: [{ functionResponse: { name: t.name, response: { content: safeJsonParse(t.content) } } }] });
+    // Current @google/genai expects function results back on role "user", not "function".
+    contents.push({ role: "user", parts: [{ functionResponse: { name: t.name, response: { content: safeJsonParse(t.content) } } }] });
   }
 
   return { contents, systemInstruction: systemParts.length ? systemParts.join("\n\n") : undefined };
@@ -923,7 +937,7 @@ async function callGeminiWithTools(params: {
     model: params.model,
     contents,
     config: {
-      temperature: 0.9,
+      temperature: TOOL_LOOP_TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET },
       ...(systemInstruction ? { systemInstruction } : {}),
@@ -948,7 +962,7 @@ async function callOllama(params: { model: string; messages: LLMMessage[] }): Pr
   const res = await client.chat.completions.create({
     model: params.model,
     messages: toOpenAIMessages(params.messages),
-    temperature: 0.9,
+    temperature: CHAT_TEMPERATURE,
     max_tokens: MAX_OUTPUT_TOKENS,
   });
   return {

@@ -1,3 +1,4 @@
+import { ZodError } from "zod";
 import { runProviderWithTools, type ProviderName, type ToolTurn } from "@/lib/llm";
 import { TOOLS, getToolByName, type ToolContext } from "@/lib/tools/registry";
 
@@ -64,9 +65,43 @@ export async function runToolLoop(params: {
         const result = await executeWithTimeout(() => tool.execute(parsedArgs, ctx));
         turns = [...turns, { role: "tool", toolCallId: call.id, name: call.name, content: JSON.stringify(result) }];
         toolCallRecords.push({ toolName: call.name, arguments: parsedArgs, result, status: "SUCCESS", latencyMs: Date.now() - start });
+        continue;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Tool execution failed";
-        const result = { error: message };
+        if (!(error instanceof ZodError)) {
+          const message = error instanceof Error ? error.message : "Tool execution failed";
+          const result = { error: message };
+          turns = [...turns, { role: "tool", toolCallId: call.id, name: call.name, content: JSON.stringify(result) }];
+          toolCallRecords.push({ toolName: call.name, arguments: call.arguments, result, status: "ERROR", latencyMs: Date.now() - start });
+          continue;
+        }
+
+        // One retry on invalid tool arguments: re-ask with the validation error appended,
+        // rather than immediately giving up or burning a full loop iteration.
+        const validationMessage = `Invalid arguments for tool "${call.name}": ${error.message}. Retry this tool call with corrected arguments matching its schema.`;
+        const retryTurns: ToolTurn[] = [
+          ...turns,
+          { role: "tool", toolCallId: call.id, name: call.name, content: JSON.stringify({ error: validationMessage }) },
+        ];
+        const retryResp = await runProviderWithTools({ provider: params.provider, model: params.model, turns: retryTurns, tools: toolDefs });
+        const retryCall = retryResp.toolCalls?.find((c) => c.name === call.name);
+
+        if (retryCall) {
+          try {
+            const parsedArgs = tool.schema.parse(retryCall.arguments ?? {});
+            const result = await executeWithTimeout(() => tool.execute(parsedArgs, ctx));
+            turns = [
+              ...retryTurns,
+              { role: "assistant", content: retryResp.content, toolCalls: retryResp.toolCalls },
+              { role: "tool", toolCallId: retryCall.id, name: retryCall.name, content: JSON.stringify(result) },
+            ];
+            toolCallRecords.push({ toolName: call.name, arguments: parsedArgs, result, status: "SUCCESS", latencyMs: Date.now() - start });
+            continue;
+          } catch {
+            // falls through to the error record below — the model failed to correct its arguments
+          }
+        }
+
+        const result = { error: validationMessage };
         turns = [...turns, { role: "tool", toolCallId: call.id, name: call.name, content: JSON.stringify(result) }];
         toolCallRecords.push({ toolName: call.name, arguments: call.arguments, result, status: "ERROR", latencyMs: Date.now() - start });
       }
