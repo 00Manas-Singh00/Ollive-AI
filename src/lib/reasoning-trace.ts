@@ -124,6 +124,103 @@ export function createThoughtSplitter(
   return { push, flush };
 }
 
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+
+// Streaming splitter for models that natively emit a leading <think>...</think> block
+// (e.g. GLM/Qwen3-style reasoning models on a self-hosted OpenAI-compatible endpoint) —
+// no system-prompt priming needed. Content inside the tag is routed to onThought line by
+// line; everything else passes straight through to onToken. A complete no-op passthrough
+// when no <think> tag ever appears (aside from a few characters of unavoidable buffering
+// while detecting the tag).
+export function createThinkTagSplitter(
+  onToken: (token: string) => void,
+  onThought: (thought: string) => void,
+): { push: (token: string) => void; flush: () => void } {
+  let buffer = "";
+  let state: "before" | "thinking" | "after" = "before";
+  let thoughtBuffer = "";
+
+  const emitThoughtLines = (final: boolean) => {
+    let nl;
+    while ((nl = thoughtBuffer.indexOf("\n")) !== -1) {
+      const line = thoughtBuffer.slice(0, nl).trim();
+      thoughtBuffer = thoughtBuffer.slice(nl + 1);
+      if (line) onThought(line);
+    }
+    if (final && thoughtBuffer.trim()) {
+      onThought(thoughtBuffer.trim());
+      thoughtBuffer = "";
+    }
+  };
+
+  const push = (token: string) => {
+    buffer += token;
+
+    if (state === "before") {
+      if (buffer.length < THINK_OPEN.length) {
+        if (THINK_OPEN.startsWith(buffer)) return; // could still become the tag — wait for more
+        onToken(buffer);
+        buffer = "";
+        state = "after";
+        return;
+      }
+      if (buffer.startsWith(THINK_OPEN)) {
+        state = "thinking";
+        buffer = buffer.slice(THINK_OPEN.length);
+      } else {
+        onToken(buffer);
+        buffer = "";
+        state = "after";
+        return;
+      }
+    }
+
+    if (state === "thinking") {
+      const closeIdx = buffer.indexOf(THINK_CLOSE);
+      if (closeIdx === -1) {
+        const keepTail = Math.min(buffer.length, THINK_CLOSE.length - 1);
+        const safe = buffer.slice(0, buffer.length - keepTail);
+        if (safe) {
+          thoughtBuffer += safe;
+          emitThoughtLines(false);
+        }
+        buffer = buffer.slice(buffer.length - keepTail);
+        return;
+      }
+      thoughtBuffer += buffer.slice(0, closeIdx);
+      emitThoughtLines(true);
+      buffer = buffer.slice(closeIdx + THINK_CLOSE.length);
+      state = "after";
+      if (buffer) {
+        onToken(buffer);
+        buffer = "";
+      }
+      return;
+    }
+
+    if (state === "after") {
+      onToken(buffer);
+      buffer = "";
+    }
+  };
+
+  const flush = () => {
+    if (state === "thinking") {
+      thoughtBuffer += buffer;
+      emitThoughtLines(true);
+      buffer = "";
+      return;
+    }
+    if (buffer) {
+      onToken(buffer);
+      buffer = "";
+    }
+  };
+
+  return { push, flush };
+}
+
 // Fire-and-forget persistence, same pattern as InferenceLog dispatch — never await.
 export function persistReasoningTrace(params: {
   messageId: string;

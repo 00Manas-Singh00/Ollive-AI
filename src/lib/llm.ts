@@ -3,7 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import type { LogEvent } from "@/lib/types";
-import { REASONING_SUFFIX, createThoughtSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
+import { REASONING_SUFFIX, createThoughtSplitter, createThinkTagSplitter, extractReasoningSteps } from "@/lib/reasoning-trace";
 import { getIngestQueue } from "@/lib/queue";
 import { writeLogDirect } from "@/lib/log-sink";
 
@@ -34,6 +34,12 @@ const CHAT_TEMPERATURE = Math.max(0, Math.min(2, Number(process.env.LLM_TEMPERAT
 // Tool-calling turns are deliberately low-temperature: we want reliable, well-formed
 // tool_calls JSON, not creative variation.
 const TOOL_LOOP_TEMPERATURE = 0.2;
+
+// Anthropic requires budget_tokens < max_tokens; leave headroom for the visible answer.
+const ANTHROPIC_THINKING_BUDGET = Math.max(
+  1024,
+  Math.min(MAX_OUTPUT_TOKENS - 256, Number(process.env.ANTHROPIC_THINKING_BUDGET_TOKENS ?? 4096) || 4096),
+);
 
 // Gemini 2.5 models think before answering; those thinking tokens count against the
 // output budget and arrive as one post-thinking burst (no incremental streaming).
@@ -215,14 +221,19 @@ export async function runProvider(params: {
   const { provider, model, mode, onToken, onThought, isAborted } = params;
 
   // Reasoning capture is opt-in (streaming chat path only); direct callers (race, evals) are untouched.
+  // "primary" is excluded from the Thought:-priming suffix — self-hosted reasoning models
+  // (GLM/Qwen3-style) emit a native <think>...</think> block instead, parsed by
+  // createThinkTagSplitter below with no prompt changes needed.
   const reasoning = mode === "stream" && Boolean(onThought);
-  const messages = reasoning && provider !== "anthropic" ? withReasoningSuffix(params.messages) : params.messages;
+  const messages =
+    reasoning && provider !== "anthropic" && provider !== "primary" ? withReasoningSuffix(params.messages) : params.messages;
 
   if (provider === "primary") {
     const { baseURL, apiKey } = primaryEndpoint();
     if (mode === "stream") {
-      return streamWithThoughtSplitter(
+      return streamWithSplitter(
         (p) => streamOpenAI({ ...p, baseURL, apiKey }),
+        createThinkTagSplitter,
         { model, messages, onToken, onThought, isAborted },
       );
     }
@@ -274,10 +285,14 @@ export async function runProvider(params: {
   return callGemini({ model, messages });
 }
 
-// Wraps a token-streaming provider so leading Thought:/Step: lines are diverted to onThought
+type StreamSplitter = { push: (token: string) => void; flush: () => void };
+
+// Wraps a token-streaming provider so reasoning content (however the splitter recognizes
+// it — Thought:/Step: marker lines, or a native <think> tag) is diverted to onThought
 // instead of the visible token stream. No-op passthrough when reasoning capture is off.
-async function streamWithThoughtSplitter(
+async function streamWithSplitter(
   streamFn: (p: { model: string; messages: LLMMessage[]; onToken: (token: string) => void; isAborted?: () => boolean }) => Promise<ProviderResponse>,
+  makeSplitter: (onToken: (token: string) => void, onThought: (thought: string) => void) => StreamSplitter,
   params: {
     model: string;
     messages: LLMMessage[];
@@ -290,7 +305,7 @@ async function streamWithThoughtSplitter(
   if (!params.onThought) {
     return streamFn({ model: params.model, messages: params.messages, onToken, isAborted: params.isAborted });
   }
-  const splitter = createThoughtSplitter(onToken, params.onThought);
+  const splitter = makeSplitter(onToken, params.onThought);
   const resp = await streamFn({
     model: params.model,
     messages: params.messages,
@@ -299,6 +314,20 @@ async function streamWithThoughtSplitter(
   });
   splitter.flush();
   return resp;
+}
+
+// Marker-based (Thought:/Step: lines) — used by legacy providers primed with REASONING_SUFFIX.
+async function streamWithThoughtSplitter(
+  streamFn: (p: { model: string; messages: LLMMessage[]; onToken: (token: string) => void; isAborted?: () => boolean }) => Promise<ProviderResponse>,
+  params: {
+    model: string;
+    messages: LLMMessage[];
+    onToken?: (token: string) => void;
+    onThought?: (thought: string) => void;
+    isAborted?: () => boolean;
+  },
+): Promise<ProviderResponse> {
+  return streamWithSplitter(streamFn, createThoughtSplitter, params);
 }
 
 export async function callLLMWithLogging(params: {
@@ -678,9 +707,11 @@ async function streamAnthropic(params: {
     model: params.model,
     max_tokens: MAX_OUTPUT_TOKENS,
     ...(system ? { system } : {}),
-    // Native reasoning: adaptive thinking with summarized display, only when the caller
-    // captures thoughts. Thinking tokens draw from max_tokens, same as Gemini's budget.
-    ...(params.onThought ? { thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
+    // Native reasoning, only when the caller captures thoughts. Thinking tokens draw from
+    // max_tokens (budget_tokens must be strictly less than max_tokens per the Anthropic API).
+    ...(params.onThought && ANTHROPIC_THINKING_BUDGET < MAX_OUTPUT_TOKENS
+      ? { thinking: { type: "enabled" as const, budget_tokens: ANTHROPIC_THINKING_BUDGET } }
+      : {}),
     messages: msgs,
     stream: true,
   });
