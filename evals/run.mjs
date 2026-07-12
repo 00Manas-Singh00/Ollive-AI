@@ -6,17 +6,26 @@ const CASE_FILE = process.env.EVAL_CASES_FILE || path.join(process.cwd(), "evals
 const REUSE_CONVERSATION = (process.env.EVAL_REUSE_CONVERSATION || "true").toLowerCase() !== "false";
 const EVAL_EMAIL = process.env.EVAL_USER_EMAIL || "eval-runner@ollive.local";
 const EVAL_NAME = process.env.EVAL_USER_NAME || "Eval Runner";
+const EVAL_PASSWORD = process.env.EVAL_USER_PASSWORD || "eval-runner-password";
 
 // Every /api/chat route calls requireSessionUser(), so the runner must hold a session
-// cookie. Sign in once (upserts the eval user) and reuse the Set-Cookie value on every request.
+// cookie. Sign up once (or sign in if the eval user already exists) and reuse the
+// Set-Cookie value on every request.
 let sessionCookie = "";
 
 async function signIn() {
-  const res = await fetch(`${BASE_URL}/api/auth/signin`, {
+  let res = await fetch(`${BASE_URL}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: EVAL_EMAIL, name: EVAL_NAME }),
+    body: JSON.stringify({ email: EVAL_EMAIL, name: EVAL_NAME, password: EVAL_PASSWORD }),
   });
+  if (res.status === 409) {
+    res = await fetch(`${BASE_URL}/api/auth/signin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: EVAL_EMAIL, password: EVAL_PASSWORD }),
+    });
+  }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(`Sign-in failed (${res.status}): ${payload?.error || "unknown"}`);

@@ -58,8 +58,10 @@ export default function ChatUI() {
   const [tagDrafts, setTagDrafts] = useState<Record<string, { label: string; color: string }>>({});
   const [folders, setFolders] = useState<string[]>([]);
   const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
   const [raceMode, setRaceMode] = useState(false);
   const [raceProviders, setRaceProviders] = useState<string[]>(["gemini", "grok"]);
   const [toolsMode, setToolsMode] = useState(false);
@@ -384,9 +386,13 @@ export default function ChatUI() {
   }
 
   async function signIn() {
-    const res = await fetch("/api/auth/signin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: authName, email: authEmail }) });
+    const endpoint = authMode === "signin" ? "/api/auth/signin" : "/api/auth/signup";
+    const body = authMode === "signin"
+      ? { email: authEmail, password: authPassword }
+      : { name: authName, email: authEmail, password: authPassword };
+    const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await parseJsonSafe(res);
-    if (!res.ok) return setError(data?.error || "Sign in failed");
+    if (!res.ok) return setError(data?.error || (authMode === "signin" ? "Sign in failed" : "Sign up failed"));
     setUser(data.user);
     setError("");
     await refresh();
@@ -395,12 +401,16 @@ export default function ChatUI() {
   if (!user) {
     return (
       <AuthGate
+        mode={authMode}
         authName={authName}
         authEmail={authEmail}
+        authPassword={authPassword}
         error={error}
+        onModeChange={(m) => { setAuthMode(m); setError(""); }}
         onNameChange={setAuthName}
         onEmailChange={setAuthEmail}
-        onSignIn={signIn}
+        onPasswordChange={setAuthPassword}
+        onSubmit={signIn}
       />
     );
   }

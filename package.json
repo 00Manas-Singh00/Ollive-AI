@@ -20,7 +20,8 @@
     "worker:scheduled-prompt": "dotenv -e .env -- tsx src/workers/scheduled-prompt-worker.ts",
     "worker:prompt-lab": "dotenv -e .env -- tsx src/workers/prompt-lab-worker.ts",
     "eval:run": "node evals/run.mjs",
-    "eval:report": "cat evals/latest-report.json"
+    "eval:report": "cat evals/latest-report.json",
+    "seed:admin": "dotenv -e .env -- node scripts/seed-admin.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

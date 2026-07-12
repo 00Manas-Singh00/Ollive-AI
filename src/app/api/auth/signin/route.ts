@@ -1,17 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { setSessionCookie } from "@/lib/auth";
+import { verifyPassword } from "@/lib/password";
+
+const signinSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(1),
+});
 
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
-  const email = String(body?.email || "").trim().toLowerCase();
-  const name = String(body?.name || "").trim();
-  if (!email) return NextResponse.json({ error: "Email is required" }, { status: 400 });
-  const user = await prisma.user.upsert({
-    where: { email },
-    create: { email, name: name || email.split("@")[0] },
-    update: { name: name || undefined },
-  });
+  const raw = await req.json().catch(() => ({}));
+  const parsed = signinSchema.safeParse(raw);
+  if (!parsed.success) return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
+  const { email, password } = parsed.data;
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
+    return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+  }
+
   await setSessionCookie(user.id);
   return NextResponse.json({ user: { id: user.id, email: user.email, name: user.name, role: user.role } });
 }
