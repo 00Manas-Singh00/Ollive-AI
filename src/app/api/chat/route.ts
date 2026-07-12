@@ -73,12 +73,6 @@ async function buildConversation(req: NextRequest) {
     budgetHeaders["x-budget-warning"] = "true";
   }
 
-  const provider = (process.env.LLM_PROVIDER || "gemini").toLowerCase();
-  if (provider === "gemini" && !process.env.GEMINI_API_KEY)
-    throw Object.assign(new Error("GEMINI_API_KEY is not configured"), { status: 500 });
-  if (provider === "grok" && !process.env.GROK_API_KEY)
-    throw Object.assign(new Error("GROK_API_KEY is not configured"), { status: 500 });
-
   const body = await req.json();
   const message: string = (body.message || "").trim();
   let conversationId: string | undefined = body.conversationId;
@@ -121,10 +115,8 @@ async function buildConversation(req: NextRequest) {
     take: CONTEXT_WINDOW,
   });
 
-  const model =
-    provider === "grok"
-      ? process.env.GROK_MODEL || "grok-3-mini"
-      : process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const resolvedProvider = providerOverride || getProviderPlan()[0];
+  const model = (providerOverride && modelOverride) || providerModel(resolvedProvider);
 
   const promptDecision = await resolveSystemPrompt({ conversationId, userId: user.id, model, versionOverride: promptVersionOverride, ragQuery: message });
   const llmMessages = [
@@ -238,7 +230,7 @@ export async function POST(req: NextRequest) {
               enqueueQualityScore(assistantMessage.id);
               enqueueEmbedding(conversationId);
               persistReasoningTrace({ messageId: assistantMessage.id, provider: streamResult.provider, thinkingText });
-              send(JSON.stringify({ done: true, message: assistantMessage, widget: widgetInteraction, conversationId }));
+              send(JSON.stringify({ done: true, message: assistantMessage, widget: widgetInteraction, conversationId, provider: streamResult.provider, model: streamResult.model }));
               if (isCollaborative) void publishConversationEvent(conversationId, { type: "message_created", message: assistantMessage });
             }
           } catch (err) {
@@ -331,7 +323,14 @@ export async function POST(req: NextRequest) {
       void publishConversationEvent(conversationId, { type: "message_created", message: assistantMessage });
     }
     return NextResponse.json(
-      { conversationId, message: assistantMessage, widget: widgetInteraction, toolCalls: toolCallRecords.length ? toolCallRecords : undefined },
+      {
+        conversationId,
+        message: assistantMessage,
+        widget: widgetInteraction,
+        toolCalls: toolCallRecords.length ? toolCallRecords : undefined,
+        provider: completion.provider,
+        model: completion.model,
+      },
       { headers: budgetHeaders },
     );
   } catch (error) {
