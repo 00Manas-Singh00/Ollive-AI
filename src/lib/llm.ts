@@ -10,7 +10,6 @@ export const PROVIDER_NAMES: ProviderName[] = ["primary", "gemini", "grok", "ope
 // Providers other than "primary" (self-hosted OpenAI-compatible endpoint) and "gemini"
 // (backup) are legacy/manual-only and hidden from configuredProviders() unless opted in.
 const EXTRA_PROVIDERS_ENABLED = process.env.ENABLE_EXTRA_PROVIDERS === "true";
-type RoutingPolicy = "manual" | "cost" | "latency" | "quality";
 
 export type ProviderResponse = {
   output: string;
@@ -100,44 +99,52 @@ export function configuredProviders(): ProviderName[] {
   return list;
 }
 
-function providerOrder(policy: RoutingPolicy): ProviderName[] {
-  const manual = (process.env.LLM_PROVIDER || "primary").toLowerCase() as ProviderName;
-  const all: ProviderName[] = ["primary", "gemini", "grok", "openai", "anthropic", "ollama"];
-  if (policy === "quality") return ["anthropic", "primary", "openai", "grok", "gemini", "ollama"];
-  if (policy === "latency") return ["primary", "gemini", "ollama", "openai", "grok", "anthropic"];
-  if (policy === "cost") return ["ollama", "primary", "gemini", "grok", "openai", "anthropic"];
-  return [manual, ...all.filter((p) => p !== manual)];
-}
-
+// Automatic plan is always [primary, gemini] (whichever is configured) — gemini is a pure
+// backup, never a routing-policy alternative. providerOverride bypasses this entirely.
 export function getProviderPlan(providerOverride?: ProviderName): ProviderName[] {
   const configured = new Set(configuredProviders());
   if (providerOverride) {
     if (!configured.has(providerOverride)) throw new Error(`Provider ${providerOverride} is not configured`);
     return [providerOverride];
   }
-  const policy = ((process.env.LLM_ROUTING_POLICY || "manual").toLowerCase() as RoutingPolicy);
-  const order = providerOrder(policy).filter((p) => configured.has(p));
+  const order = (["primary", "gemini"] as ProviderName[]).filter((p) => configured.has(p));
   if (order.length === 0) {
-    throw new Error("No configured provider found. Set GEMINI_API_KEY and/or GROK_API_KEY.");
+    throw new Error("No configured provider found. Set LLM_BASE_URL and/or GEMINI_API_KEY.");
   }
   return order;
 }
 
+// Typed status check only — no message substring sniffing. Covers SDK errors (OpenAI/
+// Anthropic expose `.status`; fetch-based adapters attach `.status` themselves), raw
+// Response-shaped errors (`.response.status`), and network-level failures (ECONNREFUSED
+// etc., or a bare fetch TypeError).
 function isRetryableProviderError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return (
-    message.includes("429") ||
-    message.includes("rate limit") ||
-    message.includes("quota") ||
-    message.includes("500") ||
-    message.includes("502") ||
-    message.includes("503") ||
-    message.includes("504") ||
-    message.includes("temporar") ||
-    message.includes("timed out") ||
-    message.includes("network") ||
-    message.includes("econn")
-  );
+  if (!error || typeof error !== "object") return false;
+  const status = (error as { status?: unknown }).status ?? (error as { response?: { status?: unknown } }).response?.status;
+  if (typeof status === "number") return status === 429 || (status >= 500 && status < 600);
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(code)) return true;
+  if (error instanceof TypeError && /fetch/i.test(error.message)) return true;
+  return false;
+}
+
+type ProviderTaggedError = Error & { llmProvider?: ProviderName; llmModel?: string };
+
+function tagError(error: unknown, provider: ProviderName, model: string): unknown {
+  if (error instanceof Error) {
+    (error as ProviderTaggedError).llmProvider = provider;
+    (error as ProviderTaggedError).llmModel = model;
+  }
+  return error;
+}
+
+// Reads the provider/model actually attempted off an error thrown by executeWithFailover,
+// falling back to what the plan would have picked first (never a hardcoded provider name).
+export function lastAttemptFromError(error: unknown, providerOverride?: ProviderName): { provider: ProviderName; model: string } {
+  const tagged = error as ProviderTaggedError;
+  if (tagged?.llmProvider) return { provider: tagged.llmProvider, model: tagged.llmModel || providerModel(tagged.llmProvider) };
+  const provider = getProviderPlan(providerOverride)[0];
+  return { provider, model: providerModel(provider) };
 }
 
 async function executeWithFailover(params: {
@@ -152,21 +159,32 @@ async function executeWithFailover(params: {
 }): Promise<{ provider: ProviderName; model: string; response: ProviderResponse }> {
   const plan = getProviderPlan(params.providerOverride);
   let lastError: unknown;
+  let lastAttempt: { provider: ProviderName; model: string } = { provider: plan[0], model: providerModel(plan[0]) };
 
   for (let i = 0; i < plan.length; i += 1) {
     const provider = plan[i];
     const model = (params.providerOverride && params.modelOverride) || providerModel(provider);
+    lastAttempt = { provider, model };
+    let tokenEmitted = false;
+    const onToken = params.onToken
+      ? (token: string) => {
+          tokenEmitted = true;
+          params.onToken!(token);
+        }
+      : undefined;
     try {
-      const response = await runProvider({ provider, model, ...params });
+      const response = await runProvider({ provider, model, ...params, onToken });
       return { provider, model, response };
     } catch (error) {
       lastError = error;
-      const canFailover = i < plan.length - 1 && isRetryableProviderError(error);
-      if (!canFailover) throw error;
+      // Never switch providers once a token has reached the client — only a clean,
+      // pre-first-token failure is safe to silently retry on the backup.
+      const canFailover = i < plan.length - 1 && !tokenEmitted && isRetryableProviderError(error);
+      if (!canFailover) throw tagError(error, provider, model);
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("All providers failed");
+  throw tagError(lastError instanceof Error ? lastError : new Error("All providers failed"), lastAttempt.provider, lastAttempt.model);
 }
 
 // Appends the reasoning-priming suffix to the system message so marker-based providers
@@ -313,10 +331,11 @@ export async function callLLMWithLogging(params: {
     return { output: result.response.output, provider: result.provider, model: result.model };
   } catch (error) {
     const responseTs = new Date();
+    const { provider, model } = lastAttemptFromError(error, params.providerOverride);
     void sendLog({
       conversationId: params.conversationId,
-      provider: "gemini",
-      model: providerModel("gemini"),
+      provider,
+      model,
       status: "error",
       mode: "sync",
       latencyMs: Date.now() - start,
@@ -376,10 +395,11 @@ export async function streamLLMWithLogging(params: {
     return { output: result.response.output, provider: result.provider, model: result.model };
   } catch (error) {
     const responseTs = new Date();
+    const { provider, model } = lastAttemptFromError(error, params.providerOverride);
     void sendLog({
       conversationId: params.conversationId,
-      provider: "gemini",
-      model: providerModel("gemini"),
+      provider,
+      model,
       status: "error",
       mode: "stream",
       latencyMs: Date.now() - start,
